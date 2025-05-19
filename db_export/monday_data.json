@@ -1,0 +1,533 @@
+{
+  "export_date": "2025-05-18T17:16:43.626482",
+  "tables": {
+    "boards": {
+      "schema": [
+        {
+          "name": "id",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": true
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(255)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        }
+      ],
+      "rows": []
+    },
+    "sync_logs": {
+      "schema": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": true
+        },
+        {
+          "name": "board_id",
+          "type": "VARCHAR(50)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "item_id",
+          "type": "VARCHAR(50)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "action",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "message",
+          "type": "TEXT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        }
+      ],
+      "rows": []
+    },
+    "templates": {
+      "schema": [
+        {
+          "name": "id",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": true
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(255)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "columns",
+          "type": "TEXT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "settings",
+          "type": "TEXT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        }
+      ],
+      "rows": []
+    },
+    "calendar_events": {
+      "schema": [
+        {
+          "name": "id",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": true
+        },
+        {
+          "name": "title",
+          "type": "VARCHAR(255)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "start_time",
+          "type": "DATETIME",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "end_time",
+          "type": "DATETIME",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "is_all_day",
+          "type": "BOOLEAN",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "color",
+          "type": "VARCHAR(50)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "location",
+          "type": "VARCHAR(255)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "event_type",
+          "type": "VARCHAR(50)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "monday_item_id",
+          "type": "VARCHAR(50)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        }
+      ],
+      "rows": []
+    },
+    "map_locations": {
+      "schema": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": true
+        },
+        {
+          "name": "item_id",
+          "type": "VARCHAR(50)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "board_id",
+          "type": "VARCHAR(50)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "address",
+          "type": "VARCHAR(255)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "latitude",
+          "type": "FLOAT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "longitude",
+          "type": "FLOAT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "title",
+          "type": "VARCHAR(255)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "color",
+          "type": "VARCHAR(50)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        }
+      ],
+      "rows": []
+    },
+    "board_columns": {
+      "schema": [
+        {
+          "name": "id",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": true
+        },
+        {
+          "name": "board_id",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "title",
+          "type": "VARCHAR(255)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "type",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "settings",
+          "type": "TEXT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        }
+      ],
+      "rows": []
+    },
+    "items": {
+      "schema": [
+        {
+          "name": "id",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": true
+        },
+        {
+          "name": "board_id",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(255)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "group",
+          "type": "VARCHAR(50)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "state",
+          "type": "VARCHAR(50)",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        }
+      ],
+      "rows": []
+    },
+    "event_reminders": {
+      "schema": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": true
+        },
+        {
+          "name": "event_id",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "reminder_time",
+          "type": "DATETIME",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "is_sent",
+          "type": "BOOLEAN",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "sent_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        }
+      ],
+      "rows": []
+    },
+    "item_column_values": {
+      "schema": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": true
+        },
+        {
+          "name": "item_id",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "column_id",
+          "type": "VARCHAR(50)",
+          "notnull": true,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "value",
+          "type": "TEXT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "text",
+          "type": "TEXT",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": false,
+          "default_value": null,
+          "is_primary_key": false
+        }
+      ],
+      "rows": []
+    }
+  }
+}
