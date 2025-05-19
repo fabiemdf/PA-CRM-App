@@ -19,21 +19,13 @@ def main():
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         
-        # Get list of all tables
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        # Get the schema
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table';")
         tables = cursor.fetchall()
         
         for table in tables:
-            table_name = table[0]
-            print(f"\n{table_name.upper()} Table Schema:")
-            
-            # Get table schema
-            cursor.execute(f"PRAGMA table_info({table_name})")
-            columns = cursor.fetchall()
-            
-            for column in columns:
-                print(f"Column {column[0]}: {column[1]} ({column[2]})")
-                
+            print(table[0])
+        
         # Check item_column_values table specifically
         print("\n\nChecking ITEM_COLUMN_VALUES table specifically:")
         try:

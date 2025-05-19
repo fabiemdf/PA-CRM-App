@@ -183,21 +183,21 @@ def main():
         
         # Path to the Excel files
         excel_files = {
-            "Claims": r'C:\Users\mfabi\OneDrive\Desktop\PA_Claims_FPA_Claims_1747602640.xlsx',
-            "Clients": r'C:\Users\mfabi\OneDrive\Desktop\Clients_FPA_Clients_1747605439.xlsx',
-            "Public Adjusters": r'C:\Users\mfabi\OneDrive\Desktop\Public_Adjusters_FPA_1747605810.xlsx',
-            "Employees": r'C:\Users\mfabi\OneDrive\Desktop\Employees_Group_Title_1747605917.xlsx',
-            "Notes": r'C:\Users\mfabi\OneDrive\Desktop\Notes_Monday_Notes_xlsx_1747605941.xlsx',
-            "Insurance Representatives": r'C:\Users\mfabi\Downloads\Insurance_Representatives_Fraser_1747606797.xlsx',
-            "Police Report": r'C:\Users\mfabi\Downloads\Police_Report_Group_Title_1747606801.xlsx',
-            "Damage Estimates": r'C:\Users\mfabi\Downloads\Damage_Estimates_Fraser_1747606687.xlsx',
-            "Communications": r'C:\Users\mfabi\Downloads\Communications_Fraser_1747606702.xlsx',
-            "Leads": r'C:\Users\mfabi\Downloads\Leads_Group_Title_1747606722.xlsx',
-            "Documents": r'C:\Users\mfabi\Downloads\Documents_Fraser_1747606670.xlsx',
-            "Tasks": r'C:\Users\mfabi\Downloads\Tasks_Group_Title_1747606733.xlsx',
-            "Insurance Companies": r'C:\Users\mfabi\Downloads\Insurance_Companies_Fraser_1747606755.xlsx',
-            "Contacts": r'C:\Users\mfabi\Downloads\Contacts_Business_Contacts_1747606769.xlsx',
-            "Marketing Activities": r'C:\Users\mfabi\Downloads\Marketing_Activities_This_week_1747606782.xlsx'
+            "Claims": "data/excel/PA_Claims_FPA_Claims.xlsx",
+            "Clients": "data/excel/Clients_FPA_Clients.xlsx",
+            "Public Adjusters": "data/excel/Public_Adjusters_FPA.xlsx",
+            "Employees": "data/excel/Employees_Group_Title.xlsx",
+            "Notes": "data/excel/Notes_Monday_Notes.xlsx",
+            "Insurance Representatives": "data/excel/Insurance_Representatives_Fraser.xlsx",
+            "Police Report": "data/excel/Police_Report_Group_Title.xlsx",
+            "Damage Estimates": "data/excel/Damage_Estimates_Fraser.xlsx",
+            "Communications": "data/excel/Communications_Fraser.xlsx",
+            "Leads": "data/excel/Leads_Group_Title.xlsx",
+            "Documents": "data/excel/Documents_Fraser.xlsx",
+            "Tasks": "data/excel/Tasks_Group_Title.xlsx",
+            "Insurance Companies": "data/excel/Insurance_Companies_Fraser.xlsx",
+            "Contacts": "data/excel/Contacts_Business_Contacts.xlsx",
+            "Marketing Activities": "data/excel/Marketing_Activities_This_week.xlsx"
         }
 
         # Initialize controllers
@@ -210,12 +210,17 @@ def main():
         # Process all Excel files
         for board_name, excel_path in excel_files.items():
             try:
+                # Check if file exists
+                if not os.path.exists(excel_path):
+                    logger.warning(f"Excel file not found: {excel_path}")
+                    continue
+
                 # Read the Excel file
                 df = pd.read_excel(excel_path)
                 
                 # Extract board name from first cell or use the key as default
                 board_name_from_excel = df.iloc[0, 0] if not pd.isna(df.iloc[0, 0]) else board_name
-                print(f"Processing {board_name} board from {excel_path}")
+                logger.info(f"Processing {board_name} board from {excel_path}")
                 
                 # Extract data items - skip any metadata rows
                 data_items = df.values.tolist()
@@ -224,7 +229,7 @@ def main():
                 if 'data' in main_window.controllers:
                     success = main_window.controllers['data'].import_excel_data_for_board(board_name, data_items)
                     if success:
-                        print(f"Successfully imported Excel data into {board_name} board")
+                        logger.info(f"Successfully imported Excel data into {board_name} board")
                         
                         # Refresh the board in the UI
                         board_id = main_window.controllers['board'].get_board_id(board_name)
@@ -233,11 +238,15 @@ def main():
                             if board_name == "Claims":
                                 main_window._on_select_board(board_id)
                     else:
-                        print(f"Failed to import Excel data into {board_name} board")
+                        logger.error(f"Failed to import Excel data into {board_name} board")
                     
             except Exception as e:
-                print(f"Error processing {board_name} Excel file: {str(e)}")
                 logger.error(f"Error processing {board_name} Excel file: {str(e)}")
+                QMessageBox.warning(
+                    main_window,
+                    "Excel Import Warning",
+                    f"Could not process {board_name} Excel file: {str(e)}\n\nPlease ensure the file exists at: {excel_path}"
+                )
 
         # Initialize weather feeds
         try:

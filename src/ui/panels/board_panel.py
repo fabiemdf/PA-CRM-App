@@ -246,31 +246,28 @@ class BoardPanel(QWidget):
     
     def _refresh_board(self, board_id: str):
         """
-        Refresh a specific board.
+        Refresh a board.
         
         Args:
             board_id: Board ID to refresh
         """
         try:
-            # Update status
-            self.status_label.setText(f"Refreshing board {board_id}...")
-            self.status_label.setStyleSheet("color: blue;")
-            
-            # Refresh board from API
-            self.board_controller.refresh_board(board_id)
-            
-            # Reload boards
-            self.load_boards()
-            
-            # Select the refreshed board
-            self.select_board(board_id)
-            
+            # Refresh board in controller
+            if self.board_controller.refresh_board(board_id):
+                # Reload boards
+                self.load_boards()
+                
+                # Show success message
+                self.status_bar.showMessage("Board refreshed", 3000)
+            else:
+                # Show error message
+                QMessageBox.warning(
+                    self,
+                    "Refresh Failed",
+                    "Failed to refresh board."
+                )
         except Exception as e:
-            logger.error(f"Failed to refresh board {board_id}: {str(e)}")
-            self.status_label.setText("Failed to refresh board")
-            self.status_label.setStyleSheet("color: red;")
-            
-            # Show error dialog
+            logger.error(f"Failed to refresh board: {str(e)}")
             handle_error(
                 exception=e,
                 parent=self,
@@ -279,30 +276,17 @@ class BoardPanel(QWidget):
     
     def _open_in_browser(self, board_id: str):
         """
-        Open board in web browser.
+        Open board in browser.
         
         Args:
             board_id: Board ID to open
         """
-        try:
-            from PySide6.QtGui import QDesktopServices
-            from PySide6.QtCore import QUrl
-            
-            # Get board URL
-            url = f"https://monday.com/boards/{board_id}"
-            
-            # Open URL in browser
-            QDesktopServices.openUrl(QUrl(url))
-            
-        except Exception as e:
-            logger.error(f"Failed to open board in browser: {str(e)}")
-            
-            # Show error dialog
-            handle_error(
-                exception=e,
-                parent=self,
-                context={"module": "BoardPanel", "method": "_open_in_browser"}
-            )
+        # TODO: Implement browser opening
+        QMessageBox.information(
+            self,
+            "Not Implemented",
+            "Opening in browser is not yet implemented."
+        )
     
     def _show_properties(self, board_id: str):
         """

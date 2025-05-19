@@ -1,0 +1,18 @@
+{
+    "api_key": "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjM0OTQ4ODM4MywiYWFpIjoxMSwidWlkIjo1ODgzMzI4OSwiaWFkIjoiMjAyNC0wNC0xOVQxMDoyNjo0OC4wMDBaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MjI2NjU3MDIsInJnbiI6InVzZTEifQ.1fcBqPcyKSfEN0VF-6M2ecVu1gGBg2D2vE6OTSHbEKg",
+    "auto_sync": false,
+    "sync_interval": 300,
+    "log_level": "INFO",
+    "name": "Meyer D Fabian",
+    "company": "Fabian, Meyer Consulting LLC",
+    "position": "Owner",
+    "theme": "system",
+    "default_board": "",
+    "locale": "en_US",
+    "date_format": "yyyy-MM-dd",
+    "time_format": "HH:mm",
+    "max_items_per_page": 100,
+    "show_news_feed": true,
+    "show_map": true,
+    "cache_limit": 100
+}

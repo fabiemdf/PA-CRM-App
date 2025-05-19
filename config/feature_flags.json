@@ -1,0 +1,17 @@
+{
+    "settlement_calculator_enabled": true,
+    "analytics_dashboard_enabled": false,
+    "document_ocr_enabled": false,
+    "timeline_visualization_enabled": false,
+    "client_portal_enabled": false,
+    "client_updates_enabled": false,
+    "client_onboarding_enabled": false,
+    "map_integration_enabled": false,
+    "voice_notes_enabled": false,
+    "policy_analysis_enabled": false,
+    "compliance_checklist_enabled": false,
+    "deadline_tracker_enabled": false,
+    "cloud_sync_enabled": false,
+    "ai_assistant_enabled": false,
+    "weather_tracking_enabled": true
+} 

@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QSize, QSettings, QPoint, QTimer
 from PySide6.QtGui import QIcon, QAction, QKeySequence, QCloseEvent
 from PySide6.QtWidgets import (
     QMainWindow, QDockWidget, QMenu, QToolBar, QMessageBox,
-    QStatusBar, QTabWidget, QFileDialog, QWidget, QVBoxLayout, QMenuBar
+    QStatusBar, QTabWidget, QFileDialog, QWidget, QVBoxLayout, QMenuBar, QDialog
 )
 
 # Import application-specific modules
@@ -30,10 +30,55 @@ from controllers.data_controller import DataController
 from controllers.sync_controller import SyncController
 from controllers.calendar_controller import CalendarController
 from controllers.feedback_controller import FeedbackController
+from controllers.settlement_controller import SettlementController
+from ui.dialogs.settlement_calculator_dialog import SettlementCalculatorDialog
 
 from api.monday_api import MondayAPI
 from utils.error_handling import handle_error, MondayError, ErrorCodes
 from utils.settings import load_settings
+
+# Import feature flags with fallback options
+try:
+    from src.utils.feature_flags import feature_flags, is_feature_enabled
+except ImportError:
+    try:
+        from utils.feature_flags import feature_flags, is_feature_enabled
+    except ImportError:
+        # Create placeholder feature flags function if module can't be imported
+        def is_feature_enabled(feature_name):
+            return False
+        class FeatureFlagsPlaceholder:
+            def __init__(self):
+                self.flags = {}
+            def get_enabled_features(self):
+                return []
+        feature_flags = FeatureFlagsPlaceholder()
+
+# Import feature dialogs with fallback handling
+try:
+    from src.ui.dialogs.feature_manager_dialog import FeatureManagerDialog
+except ImportError:
+    try:
+        from ui.dialogs.feature_manager_dialog import FeatureManagerDialog
+    except ImportError:
+        # Will be handled at runtime if needed
+        pass
+
+# Import database migration with fallback options
+try:
+    from src.utils.database_migration import DatabaseMigration
+except ImportError:
+    try:
+        from utils.database_migration import DatabaseMigration
+    except ImportError:
+        # Create placeholder DatabaseMigration class if module can't be imported
+        class DatabaseMigration:
+            def __init__(self, *args, **kwargs):
+                pass
+            def apply_pending_migrations(self):
+                return (0, 0)
+            def get_applied_migrations(self):
+                return []
 
 # Get logger
 logger = logging.getLogger("monday_uploader.main_window")
@@ -108,8 +153,7 @@ class MainWindow(QMainWindow):
             )
             
             self.controllers['data'] = DataController(
-                self.controllers['board'], 
-                self.session
+                'monday_sync.db'
             )
             
             self.controllers['sync'] = SyncController(
@@ -128,6 +172,9 @@ class MainWindow(QMainWindow):
             # Set sync controller to offline mode by default to avoid API calls
             if 'sync' in self.controllers:
                 self.controllers['sync'].set_offline_mode(True)
+            
+            # Create settlement controller if not exists
+            self.controllers['settlement'] = SettlementController(self.engine)
             
             logger.info("Controllers initialized")
         except Exception as e:
@@ -165,7 +212,7 @@ class MainWindow(QMainWindow):
         # Create items panel and set as central widget
         try:
             # Create items panel
-            items_panel = ItemsPanel(self.controllers['data'], self)
+            items_panel = ItemsPanel(self.controllers['board'], self.controllers['data'], self)
             
             # Set as central widget
             self.setCentralWidget(items_panel)
@@ -180,6 +227,9 @@ class MainWindow(QMainWindow):
                 parent=self,
                 context={"module": "MainWindow", "method": "_setup_ui"}
             )
+        
+        # Setup settlement calculator
+        self._setup_settlement_calculator()
     
     def _create_action(self, text: str, tooltip: str, slot=None, shortcut: Optional[str] = None) -> QAction:
         """
@@ -229,6 +279,39 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._create_action("&Dock Manager", "Show/hide dock manager", self._toggle_dock_manager))
         view_menu.addAction(self._create_action("&Items Panel", "Show/hide items panel", self._toggle_items_panel))
         
+        # Tools menu
+        tools_menu = menu_bar.addMenu("&Tools")
+        
+        # Check if settlement calculator is enabled via feature flags
+        try:
+            # Try to import feature flags module
+            try:
+                from src.utils.feature_flags import feature_flags
+                has_feature_flags = True
+            except ImportError:
+                try:
+                    from utils.feature_flags import feature_flags 
+                    has_feature_flags = True
+                except ImportError:
+                    has_feature_flags = False
+            
+            if has_feature_flags and feature_flags.is_enabled("settlement_calculator_enabled"):
+                # Add settlement calculator entry
+                tools_menu.addAction(self._create_action("&Settlement Calculator", 
+                                                       "Open settlement calculator", 
+                                                       self._on_launch_settlement_calculator))
+        except Exception as e:
+            logger.warning(f"Could not check settlement calculator feature flag: {str(e)}")
+        
+        tools_menu.addAction(self._create_action("&Template Creator", "Create document templates", self._on_template_creator))
+        tools_menu.addSeparator()
+        
+        # Add feature manager if feature flags are available
+        if has_feature_flags:
+            tools_menu.addAction(self._create_action("&Feature Manager", "Manage application features", self._on_launch_feature_manager))
+            
+        tools_menu.addAction(self._create_action("&Database Management", "Manage database migrations", self._on_database_manager))
+        
         # Sync menu
         sync_menu = menu_bar.addMenu("&Sync")
         sync_menu.addAction(self._create_action("&Sync Now", "Sync with Monday.com", self._on_sync))
@@ -241,6 +324,9 @@ class MainWindow(QMainWindow):
         help_menu.addSeparator()
         help_menu.addAction(self._create_action("Send &Feedback", "Send feedback to developers", self._on_feedback))
         help_menu.addAction(self._create_action("View &Feedback", "View and manage feedback", self._on_view_feedback))
+        
+        # Store menu references
+        self.menu_tools = tools_menu
     
     def _create_tool_bar(self):
         """Create the tool bar."""
@@ -675,7 +761,7 @@ class MainWindow(QMainWindow):
     def _on_feedback(self):
         """Handle feedback menu action."""
         from ui.dialogs.feedback_dialog import FeedbackDialog
-        dialog = FeedbackDialog(self)
+        dialog = FeedbackDialog(self, feedback_controller=self.controllers.get('feedback'))
         dialog.exec_()
 
     def _on_new(self):
@@ -775,4 +861,278 @@ class MainWindow(QMainWindow):
     def _on_feedback_updated(self):
         """Handle feedback update."""
         # Refresh any relevant UI elements
-        self.status_bar.showMessage("Feedback updated", 3000) 
+        self.status_bar.showMessage("Feedback updated", 3000)
+    
+    def _setup_settlement_calculator(self):
+        """Setup the settlement calculator menu and toolbar items."""
+        # Check if feature is enabled
+        if not is_feature_enabled("settlement_calculator_enabled"):
+            logger.info("Settlement calculator feature is disabled")
+            return
+            
+        # Add to toolbar
+        if hasattr(self, 'toolbar'):
+            # Create toolbar button with icon
+            calculator_icon = QIcon.fromTheme("accessories-calculator")
+            self.toolbar_settlement = QAction(calculator_icon, "Settlement Calculator", self)
+            self.toolbar_settlement.setStatusTip("Calculate potential claim settlements")
+            self.toolbar_settlement.triggered.connect(self._on_settlement_calculator)
+            
+            # Add to toolbar
+            self.toolbar.addAction(self.toolbar_settlement)
+        
+        logger.info("Settlement calculator UI components initialized")
+
+    def _on_settlement_calculator(self):
+        """Open the settlement calculator dialog."""
+        try:
+            # Get the currently selected claim, if any
+            claim_id = None
+            if hasattr(self, 'current_claim_id'):
+                claim_id = self.current_claim_id
+            
+            # Create and show dialog
+            policy_controller = self.controllers.get('policy')
+            dialog = SettlementCalculatorDialog(policy_controller, claim_id, self)
+            
+            # Connect signals
+            dialog.calculation_saved.connect(self._on_settlement_calculation_saved)
+            
+            # Show dialog
+            dialog.exec()
+            
+        except Exception as e:
+            logger.error(f"Error opening settlement calculator: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to open settlement calculator: {str(e)}"
+            )
+
+    def _on_settlement_calculation_saved(self, calculation_data):
+        """Handle settlement calculation saved event."""
+        try:
+            # Log the successful save
+            claim_id = calculation_data.get("inputs", {}).get("claim_id", "unknown")
+            amount = calculation_data.get("results", {}).get("Estimated Settlement", 0)
+            
+            # Format the amount as currency
+            formatted_amount = f"${amount:,.2f}"
+            
+            # Show notification to the user
+            self.status_bar.showMessage(f"Settlement calculation saved for claim {claim_id}: {formatted_amount}", 5000)
+            
+            # Refresh any relevant views
+            if hasattr(self, "refresh_claims_view") and callable(self.refresh_claims_view):
+                self.refresh_claims_view()
+            
+            # If we have the settlement controller, refresh data
+            if "settlement" in self.controllers:
+                # Get updated statistics
+                stats = self.controllers["settlement"].get_calculation_statistics()
+                if stats:
+                    logger.info(f"Settlement stats: {stats['count']} calculations, avg: ${stats['average_settlement']:,.2f}")
+            
+            logger.info(f"Settlement calculation saved for claim {claim_id}: {formatted_amount}")
+            
+        except Exception as e:
+            logger.error(f"Error handling settlement calculation saved: {str(e)}")
+            self.status_bar.showMessage(f"Error processing saved calculation: {str(e)}", 3000)
+
+    def _on_launch_settlement_calculator(self):
+        """Launch the settlement calculator dialog."""
+        try:
+            # Import the settlement calculator dialog
+            try:
+                from src.ui.dialogs.settlement_calculator_dialog import SettlementCalculatorDialog
+            except ImportError:
+                try:
+                    from ui.dialogs.settlement_calculator_dialog import SettlementCalculatorDialog
+                except ImportError:
+                    raise ImportError("Could not import SettlementCalculatorDialog")
+            
+            # Get selected claim ID if available
+            claim_id = None
+            if hasattr(self, "selected_claim_id"):
+                claim_id = self.selected_claim_id
+            
+            # Get policy controller
+            policy_controller = None
+            if "policy" in self.controllers:
+                policy_controller = self.controllers["policy"]
+            
+            # Create and show dialog
+            dialog = SettlementCalculatorDialog(policy_controller, claim_id, self)
+            dialog.show()
+            
+            # Connect to calculation saved signal
+            dialog.calculation_saved.connect(self._on_settlement_calculation_saved)
+            
+            logger.info("Launched settlement calculator dialog")
+            
+        except Exception as e:
+            logger.error(f"Error launching settlement calculator: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Could not launch settlement calculator: {str(e)}"
+            )
+
+    def _on_launch_feature_manager(self):
+        """Launch the feature manager dialog."""
+        try:
+            # Import the feature manager dialog
+            try:
+                from src.ui.dialogs.feature_manager_dialog import FeatureManagerDialog
+            except ImportError:
+                try:
+                    from ui.dialogs.feature_manager_dialog import FeatureManagerDialog
+                except ImportError:
+                    raise ImportError("Could not import FeatureManagerDialog")
+            
+            # Create and show dialog
+            dialog = FeatureManagerDialog(self)
+            result = dialog.exec()
+            
+            # Refresh UI if changes were made
+            if result == QDialog.Accepted and dialog.changes_made:
+                self._refresh_ui_for_feature_changes()
+            
+            logger.info("Feature manager dialog completed")
+            
+        except Exception as e:
+            logger.error(f"Error launching feature manager: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Could not launch feature manager: {str(e)}"
+            )
+
+    def _on_database_manager(self):
+        """Open the database management dialog."""
+        try:
+            # Create database migration manager
+            migration_manager = DatabaseMigration(self.engine)
+            
+            # Get pending migrations
+            pending_migrations = migration_manager.get_pending_migrations()
+            
+            if pending_migrations:
+                # Ask user if they want to apply pending migrations
+                apply_all = QMessageBox.question(
+                    self,
+                    "Database Migrations",
+                    f"There are {len(pending_migrations)} pending database migrations. Apply them now?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                ) == QMessageBox.Yes
+                
+                if apply_all:
+                    # Backup database first
+                    backup_path = migration_manager.backup_database()
+                    if backup_path:
+                        logger.info(f"Database backed up to: {backup_path}")
+                        
+                        # Apply migrations
+                        success_count, total = migration_manager.apply_pending_migrations()
+                        
+                        QMessageBox.information(
+                            self,
+                            "Database Migrations",
+                            f"Applied {success_count} of {total} migrations successfully.\nDatabase backed up to: {backup_path}"
+                        )
+                    else:
+                        QMessageBox.warning(
+                            self,
+                            "Database Backup Failed",
+                            "Failed to back up database, migrations not applied."
+                        )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Database Migrations",
+                    "No pending database migrations."
+                )
+            
+        except Exception as e:
+            logger.error(f"Error managing database: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Database Error",
+                f"Error managing database: {str(e)}"
+            )
+
+    def _on_features_changed(self):
+        """Handle changes to feature flags."""
+        try:
+            # Show notification about restart
+            QMessageBox.information(
+                self,
+                "Feature Changes",
+                "Feature flag changes have been applied. Some changes will take effect after restart."
+            )
+            
+            # Update UI based on feature flags
+            self._update_ui_for_features()
+            
+        except Exception as e:
+            logger.error(f"Error handling feature changes: {str(e)}")
+    
+    def _update_ui_for_features(self):
+        """Update UI components based on feature flags."""
+        # This method can be called at startup and when features change
+        # to show/hide UI elements based on enabled features
+        
+        # Check settlement calculator
+        if hasattr(self, 'toolbar_settlement'):
+            self.toolbar_settlement.setVisible(is_feature_enabled("settlement_calculator_enabled"))
+        
+        # Update other UI elements based on feature flags
+        # ...
+        
+        # Refresh status bar
+        enabled_features = feature_flags.get_enabled_features()
+        self.status_bar.showMessage(f"Active features: {len(enabled_features)}", 3000)
+    
+    def _refresh_ui_for_feature_changes(self):
+        """Update UI elements based on feature flag changes."""
+        try:
+            # First, try to import feature flags
+            try:
+                from src.utils.feature_flags import feature_flags
+            except ImportError:
+                try:
+                    from utils.feature_flags import feature_flags
+                except ImportError:
+                    logger.warning("Could not import feature flags module")
+                    return
+            
+            # Refresh the menu to show/hide features
+            self._create_menu_bar()
+            
+            # Update toolbar to show/hide buttons
+            if hasattr(self, "settlement_tool_button") and hasattr(self.settlement_tool_button, "setVisible"):
+                self.settlement_tool_button.setVisible(feature_flags.is_enabled("settlement_calculator_enabled"))
+            
+            # Notify user about changes
+            QMessageBox.information(
+                self,
+                "Feature Changes Applied",
+                "Feature flag changes have been applied. Some changes may require a restart to take full effect."
+            )
+            
+            # Log enabled features
+            enabled_features = feature_flags.get_enabled_features()
+            feature_count = len(enabled_features)
+            logger.info(f"UI refreshed with {feature_count} enabled features")
+            
+            # Update status bar
+            self.status_bar.showMessage(f"Features updated: {feature_count} features enabled", 3000)
+            
+        except Exception as e:
+            logger.error(f"Error refreshing UI for feature changes: {str(e)}")
+            QMessageBox.warning(
+                self,
+                "Feature Update Error",
+                f"Error updating UI for feature changes: {str(e)}"
+            ) 

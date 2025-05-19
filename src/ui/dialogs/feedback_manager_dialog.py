@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QTextEdit, QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QSplitter, QWidget, QFormLayout, QMessageBox
+    QHeaderView, QSplitter, QWidget, QFormLayout, QMessageBox, QFileDialog
 )
 from PySide6.QtGui import QIcon
 

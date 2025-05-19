@@ -22,9 +22,10 @@ logger = logging.getLogger("monday_uploader.feedback_dialog")
 class FeedbackDialog(QDialog):
     """Dialog for collecting user feedback."""
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, feedback_controller=None):
         """Initialize the feedback dialog."""
         super().__init__(parent)
+        self.feedback_controller = feedback_controller
         
         self.setWindowTitle("Send Feedback")
         self.setMinimumSize(600, 500)
@@ -383,7 +384,12 @@ class FeedbackDialog(QDialog):
                 })
             
             # TODO: Send feedback data to controller
-            
+            if self.feedback_controller:
+                success = self.feedback_controller.submit_feedback(feedback_data)
+                if not success:
+                    logger.error("Failed to save feedback.")
+            else:
+                logger.warning("No feedback controller provided; feedback not saved.")
             logger.info(f"Feedback submitted: {feedback_data}")
             self.accept()
             

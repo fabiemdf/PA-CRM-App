@@ -34,11 +34,16 @@ ENV/
 *.swo
 .DS_Store
 
-# Project specific
+# Application specific
+data/excel/*.xlsx
+data/excel/*.xls
 *.db
-*.log
+*.sqlite3
 logs/
-config.json
-settings.json
-*.xlsx
+*.log
+
+# Keep README files
+!data/excel/README.md
+
+# Project specific
 *.csv 

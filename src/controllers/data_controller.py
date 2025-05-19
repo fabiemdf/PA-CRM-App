@@ -1,3 +1,5 @@
+print("Loaded DataController from:", __file__)
+
 """
 Data controller for managing Monday.com items.
 """
@@ -8,10 +10,11 @@ import json
 import requests
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
-from models.database import Claim, Client, PublicAdjuster, Employee, Note, BoardData, WeatherFeed
+from models.database import Claim, Client, PublicAdjuster, Employee, Note, BoardData, WeatherFeed, Board, BoardView, init_db
 import pandas as pd
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
+from sqlalchemy.orm import Session
 
 # Get logger
 logger = logging.getLogger("monday_uploader.data_controller")
@@ -21,19 +24,41 @@ class DataController:
     Controller for managing Monday.com board items.
     """
     
-    def __init__(self, board_controller, session):
-        """
-        Initialize the data controller.
-        
-        Args:
-            board_controller: BoardController instance
-            session: SQLAlchemy session
-        """
-        self.board_controller = board_controller
-        self.session = session
+    def __init__(self, db_path: str = None, parent=None, *args, **kwargs):
+        self.engine = init_db(db_path) if db_path else None
         self._mock_items = {}  # Cache for mock items
+        self.parent = parent
+        
+        # Define board mapping
+        self.board_map = {
+            "Claims": "8903072880",
+            "Clients": "8903072881",
+            "Public Adjusters": "8903072882",
+            "Employees": "8903072883",
+            "Notes": "8903072884",
+            "Weather Reports": "8903072885",
+            "Tasks": "8903072886",
+            "Leads": "8903072887",
+            "Documents": "8903072888",
+            "Damage Estimates": "8903072889"
+        }
         
         logger.info("Data controller initialized")
+    
+    def get_board_name(self, board_id: str) -> Optional[str]:
+        """
+        Get the name of a board from its ID.
+        
+        Args:
+            board_id: Board ID
+            
+        Returns:
+            Board name or None if not found
+        """
+        for name, id in self.board_map.items():
+            if id == board_id:
+                return name
+        return None
     
     def load_board_items(self, board_id: str) -> List[Dict[str, Any]]:
         """
@@ -47,61 +72,66 @@ class DataController:
         """
         try:
             # Check the board type
-            board_name = self.board_controller.get_board_name(board_id)
+            board_name = self.get_board_name(board_id)
+            logger.info(f"Loading items for board: {board_name} (ID: {board_id})")
             
             # First check if we have generic board data
-            board_data = self.session.query(BoardData).filter_by(board_id=board_id).all()
+            board_data = self.load_board_data_from_database(board_id)
             if board_data:
-                return self.load_board_data_from_database(board_id)
+                return board_data
                 
             # For backward compatibility, check specialized models
             # Handle Claims board
             if board_name == "Claims":
-                # Check if we have data in the database
-                claims = self.session.query(Claim).filter_by(board_id=board_id).all()
-                if claims:
-                    # If claims exist in database, load them
-                    return self.load_claims_from_database(board_id)
+                try:
+                    # Check if we have data in the database
+                    claims = self.load_claims_from_database(board_id)
+                    if claims:
+                        logger.info(f"Found {len(claims)} claims in database")
+                        return claims
+                except Exception as e:
+                    logger.error(f"Error loading claims: {str(e)}")
+                    return []
             
             # Handle Clients board
             elif board_name == "Clients":
                 # Check if we have data in the database
-                clients = self.session.query(Client).filter_by(board_id=board_id).all()
+                clients = self.load_clients_from_database(board_id)
                 if clients:
                     # If clients exist in database, load them
-                    return self.load_clients_from_database(board_id)
+                    return clients
             
             # Handle Public Adjusters board
             elif board_name == "Public Adjusters":
                 # Check if we have data in the database
-                adjusters = self.session.query(PublicAdjuster).filter_by(board_id=board_id).all()
+                adjusters = self.load_public_adjusters_from_database(board_id)
                 if adjusters:
                     # If public adjusters exist in database, load them
-                    return self.load_public_adjusters_from_database(board_id)
+                    return adjusters
             
             # Handle Employees board
             elif board_name == "Employees":
                 # Check if we have data in the database
-                employees = self.session.query(Employee).filter_by(board_id=board_id).all()
+                employees = self.load_employees_from_database(board_id)
                 if employees:
                     # If employees exist in database, load them
-                    return self.load_employees_from_database(board_id)
+                    return employees
             
             # Handle Notes board
             elif board_name == "Notes":
                 # Check if we have data in the database
-                notes = self.session.query(Note).filter_by(board_id=board_id).all()
+                notes = self.load_notes_from_database(board_id)
                 if notes:
                     # If notes exist in database, load them
-                    return self.load_notes_from_database(board_id)
+                    return notes
             
             # Handle Weather Feeds board
             elif board_name == "Weather Reports":
                 # Check if we have data in the database
-                weather_feeds = self.session.query(WeatherFeed).all()
+                weather_feeds = self.load_weather_feeds_from_database()
                 if weather_feeds:
                     # If weather feeds exist in database, load them
-                    return self.load_weather_feeds_from_database()
+                    return weather_feeds
                 else:
                     # If no data in database, fetch it
                     return self.fetch_and_store_weather_feeds()
@@ -125,7 +155,8 @@ class DataController:
         """
         try:
             # Clear existing weather feeds
-            self.session.query(WeatherFeed).delete()
+            with Session(self.engine) as session:
+                session.query(WeatherFeed).delete()
             
             # List to store all fetched feeds
             all_feeds = []
@@ -143,13 +174,14 @@ class DataController:
             all_feeds.extend(weather_gov_feeds)
             
             # Commit to database
-            self.session.commit()
+            session.commit()
             
             # Return as items for display
             return self.load_weather_feeds_from_database()
         except Exception as e:
             logger.error(f"Error fetching weather feeds: {str(e)}")
-            self.session.rollback()
+            with Session(self.engine) as session:
+                session.rollback()
             return []
     
     def fetch_noaa_feeds(self) -> List[WeatherFeed]:
@@ -177,19 +209,20 @@ class DataController:
                 {"title": "Flash Flood Warning", "content": "Flash flooding is occurring or imminent in the following areas...", "url": "https://www.weather.gov/alerts/example2.php", "pub_date": datetime.now() - timedelta(hours=1)},
             ]
             
-            for item in feed_data:
-                feed = WeatherFeed(
-                    source="NOAA",
-                    feed_type="Weather Alert",
-                    title=item["title"],
-                    content=item["content"],
-                    url=item["url"],
-                    pub_date=item["pub_date"],
-                    severity="Warning",
-                    location="Southeast United States"
-                )
-                self.session.add(feed)
-                feeds.append(feed)
+            with Session(self.engine) as session:
+                for item in feed_data:
+                    feed = WeatherFeed(
+                        source="NOAA",
+                        feed_type="Weather Alert",
+                        title=item["title"],
+                        content=item["content"],
+                        url=item["url"],
+                        pub_date=item["pub_date"],
+                        severity="Warning",
+                        location="Southeast United States"
+                    )
+                    session.add(feed)
+                    feeds.append(feed)
             
             return feeds
         except Exception as e:
@@ -219,19 +252,20 @@ class DataController:
                 {"title": "5-Day Tropical Weather Outlook", "content": "A tropical wave is expected to move off the west coast of Africa...", "url": "https://www.nhc.noaa.gov/text/example5.shtml", "pub_date": datetime.now() - timedelta(hours=6)},
             ]
             
-            for item in feed_data:
-                feed = WeatherFeed(
-                    source="National Hurricane Center",
-                    feed_type="Hurricane",
-                    title=item["title"],
-                    content=item["content"],
-                    url=item["url"],
-                    pub_date=item["pub_date"],
-                    severity="Advisory",
-                    location="Atlantic Basin"
-                )
-                self.session.add(feed)
-                feeds.append(feed)
+            with Session(self.engine) as session:
+                for item in feed_data:
+                    feed = WeatherFeed(
+                        source="National Hurricane Center",
+                        feed_type="Hurricane",
+                        title=item["title"],
+                        content=item["content"],
+                        url=item["url"],
+                        pub_date=item["pub_date"],
+                        severity="Advisory",
+                        location="Atlantic Basin"
+                    )
+                    session.add(feed)
+                    feeds.append(feed)
             
             return feeds
         except Exception as e:
@@ -258,19 +292,20 @@ class DataController:
                 {"title": "Coastal Flood Advisory", "content": "A coastal flood advisory remains in effect until...", "url": "https://www.weather.gov/alerts/example8.php", "pub_date": datetime.now() - timedelta(hours=8), "severity": "Advisory", "location": "Gulf Coast"},
             ]
             
-            for item in feed_data:
-                feed = WeatherFeed(
-                    source="Weather.gov",
-                    feed_type="Weather Alert",
-                    title=item["title"],
-                    content=item["content"],
-                    url=item["url"],
-                    pub_date=item["pub_date"],
-                    severity=item["severity"],
-                    location=item["location"]
-                )
-                self.session.add(feed)
-                feeds.append(feed)
+            with Session(self.engine) as session:
+                for item in feed_data:
+                    feed = WeatherFeed(
+                        source="Weather.gov",
+                        feed_type="Weather Alert",
+                        title=item["title"],
+                        content=item["content"],
+                        url=item["url"],
+                        pub_date=item["pub_date"],
+                        severity=item["severity"],
+                        location=item["location"]
+                    )
+                    session.add(feed)
+                    feeds.append(feed)
             
             return feeds
         except Exception as e:
@@ -286,7 +321,8 @@ class DataController:
         """
         try:
             # Query weather feeds from database
-            weather_feeds = self.session.query(WeatherFeed).order_by(WeatherFeed.pub_date.desc()).all()
+            with Session(self.engine) as session:
+                weather_feeds = session.query(WeatherFeed).order_by(WeatherFeed.pub_date.desc()).all()
             
             # Convert to items format
             items = []
@@ -312,7 +348,7 @@ class DataController:
             
             # Cache items
             weather_board_id = None
-            for name, id in self.board_controller.board_map.items():
+            for name, id in self.board_map.items():
                 if name == "Weather Reports":
                     weather_board_id = id
                     break
@@ -328,7 +364,7 @@ class DataController:
     
     def _generate_mock_items(self, board_id: str) -> List[Dict[str, Any]]:
         """Generate mock items for a board."""
-        board_name = self.board_controller.get_board_name(board_id) or "Unknown"
+        board_name = self.get_board_name(board_id) or "Unknown"
         
         # Get current date for reference
         now = datetime.now()
@@ -350,7 +386,6 @@ class DataController:
         statuses = status_options.get(board_name, ["New", "In Progress", "Completed"])
         
         for i in range(num_items):
-            # Create item with random data
             item = {
                 "id": f"{board_id}_{i}",
                 "name": f"{board_name} Item {i+1}",
@@ -360,22 +395,27 @@ class DataController:
             }
             
             # Add board-specific fields
-            if board_name == "Clients":
-                item["company"] = f"Company {chr(65 + i % 26)}"
-                item["email"] = f"client{i}@example.com"
-                item["phone"] = f"555-{random.randint(100, 999)}-{random.randint(1000, 9999)}"
-            
+            if board_name == "Claims":
+                item.update({
+                    "claim_number": f"CLM-{random.randint(1000, 9999)}",
+                    "client": f"Client {random.randint(1, 10)}",
+                    "amount": f"${random.randint(1000, 100000)}"
+                })
+            elif board_name == "Clients":
+                item.update({
+                    "company": f"Company {random.randint(1, 10)}",
+                    "email": f"client{i}@example.com",
+                    "phone": f"555-{random.randint(100, 999)}-{random.randint(1000, 9999)}"
+                })
             elif board_name == "Tasks":
-                item["due_date"] = (now + timedelta(days=random.randint(1, 14))).strftime("%Y-%m-%d")
-                item["priority"] = random.choice(["Low", "Medium", "High", "Critical"])
-            
-            elif board_name == "Claims":
-                item["claim_number"] = f"CLM-{random.randint(10000, 99999)}"
-                item["insured"] = f"Insured {i+1}"
-                item["amount"] = round(random.uniform(1000, 50000), 2)
+                item.update({
+                    "due_date": (now + timedelta(days=random.randint(1, 30))).strftime("%Y-%m-%d"),
+                    "priority": random.choice(["High", "Medium", "Low"]),
+                    "assigned_to": f"User {random.randint(1, 5)}"
+                })
             
             items.append(item)
-            
+        
         return items
     
     def create_item(self, board_id: str, item_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -437,7 +477,7 @@ class DataController:
                     self._mock_items[board_id][i] = item_data
                     
                     # Get the board name
-                    board_name = self.board_controller.get_board_name(board_id) or "Unknown"
+                    board_name = self.get_board_name(board_id) or "Unknown"
                     logger.info(f"Updating item {item_id} in board {board_name}")
                     
                     # Extract index from item_id (format should be board_id_index)
@@ -459,186 +499,193 @@ class DataController:
                         # Handle specialized models first
                         if board_name == "Claims":
                             # Get all claims for this board
-                            claims = self.session.query(Claim).filter_by(board_id=board_id).all()
-                            logger.info(f"Found {len(claims)} claims for board {board_id}")
-                            
-                            # Try to find the claim by index
-                            if db_index is not None and 0 <= db_index < len(claims):
-                                claim = claims[db_index]
-                                # Update fields
-                                claim.name = item_data.get("name", claim.name)
-                                claim.claim_number = item_data.get("claim_number", claim.claim_number)
-                                claim.person = item_data.get("owner", claim.person)
-                                claim.claim_status = item_data.get("claim_status", claim.claim_status)
-                                claim.client = item_data.get("insured", claim.client)
-                                claim.email = item_data.get("email", claim.email)
-                                claim.status = item_data.get("status", claim.status)
+                            with Session(self.engine) as session:
+                                claims = session.query(Claim).filter_by(board_id=board_id).all()
+                                logger.info(f"Found {len(claims)} claims for board {board_id}")
                                 
-                                # Save additional data as JSON
-                                additional_data = {k: v for k, v in item_data.items() 
-                                                 if k not in ["id", "created_at", "name", "claim_number", 
-                                                             "owner", "claim_status", "insured", "email", "status"]}
-                                claim.additional_data = json.dumps(additional_data)
-                                
-                                self.session.commit()
-                                logger.info(f"Updated claim in database: {claim.name}")
-                                updated = True
-                                
+                                # Try to find the claim by index
+                                if db_index is not None and 0 <= db_index < len(claims):
+                                    claim = claims[db_index]
+                                    # Update fields
+                                    claim.name = item_data.get("name", claim.name)
+                                    claim.claim_number = item_data.get("claim_number", claim.claim_number)
+                                    claim.person = item_data.get("owner", claim.person)
+                                    claim.claim_status = item_data.get("claim_status", claim.claim_status)
+                                    claim.client = item_data.get("insured", claim.client)
+                                    claim.email = item_data.get("email", claim.email)
+                                    claim.status = item_data.get("status", claim.status)
+                                    
+                                    # Save additional data as JSON
+                                    additional_data = {k: v for k, v in item_data.items() 
+                                                     if k not in ["id", "created_at", "name", "claim_number", 
+                                                                 "owner", "claim_status", "insured", "email", "status"]}
+                                    claim.additional_data = json.dumps(additional_data)
+                                    
+                                    session.commit()
+                                    logger.info(f"Updated claim in database: {claim.name}")
+                                    updated = True
+                                    
                         elif board_name == "Clients":
                             # Get all clients for this board
-                            clients = self.session.query(Client).filter_by(board_id=board_id).all()
-                            logger.info(f"Found {len(clients)} clients for board {board_id}")
-                            
-                            # Try to find the client by index
-                            if db_index is not None and 0 <= db_index < len(clients):
-                                client = clients[db_index]
-                                # Update fields
-                                client.name = item_data.get("name", client.name)
-                                client.company = item_data.get("company", client.company)
-                                client.email = item_data.get("email", client.email)
-                                client.phone = item_data.get("phone", client.phone)
-                                client.status = item_data.get("status", client.status)
-                                client.contact_person = item_data.get("owner", client.contact_person)
+                            with Session(self.engine) as session:
+                                clients = session.query(Client).filter_by(board_id=board_id).all()
+                                logger.info(f"Found {len(clients)} clients for board {board_id}")
                                 
-                                # Save additional data as JSON
-                                additional_data = {k: v for k, v in item_data.items() 
-                                                 if k not in ["id", "created_at", "name", "company", 
-                                                             "email", "phone", "status", "owner"]}
-                                client.additional_data = json.dumps(additional_data)
-                                
-                                self.session.commit()
-                                logger.info(f"Updated client in database: {client.name}")
-                                updated = True
-                                
+                                # Try to find the client by index
+                                if db_index is not None and 0 <= db_index < len(clients):
+                                    client = clients[db_index]
+                                    # Update fields
+                                    client.name = item_data.get("name", client.name)
+                                    client.company = item_data.get("company", client.company)
+                                    client.email = item_data.get("email", client.email)
+                                    client.phone = item_data.get("phone", client.phone)
+                                    client.status = item_data.get("status", client.status)
+                                    client.contact_person = item_data.get("owner", client.contact_person)
+                                    
+                                    # Save additional data as JSON
+                                    additional_data = {k: v for k, v in item_data.items() 
+                                                     if k not in ["id", "created_at", "name", "company", 
+                                                                 "email", "phone", "status", "owner"]}
+                                    client.additional_data = json.dumps(additional_data)
+                                    
+                                    session.commit()
+                                    logger.info(f"Updated client in database: {client.name}")
+                                    updated = True
+                                    
                         elif board_name == "Public Adjusters":
                             # Get all public adjusters for this board
-                            adjusters = self.session.query(PublicAdjuster).filter_by(board_id=board_id).all()
-                            logger.info(f"Found {len(adjusters)} public adjusters for board {board_id}")
-                            
-                            # Try to find the adjuster by index
-                            if db_index is not None and 0 <= db_index < len(adjusters):
-                                adjuster = adjusters[db_index]
-                                # Update fields
-                                adjuster.name = item_data.get("name", adjuster.name)
-                                adjuster.company = item_data.get("company", adjuster.company)
-                                adjuster.email = item_data.get("email", adjuster.email)
-                                adjuster.phone = item_data.get("phone", adjuster.phone)
-                                adjuster.status = item_data.get("status", adjuster.status)
-                                adjuster.license = item_data.get("license", adjuster.license)
-                                adjuster.state = item_data.get("state", adjuster.state)
+                            with Session(self.engine) as session:
+                                adjusters = session.query(PublicAdjuster).filter_by(board_id=board_id).all()
+                                logger.info(f"Found {len(adjusters)} public adjusters for board {board_id}")
                                 
-                                # Save additional data as JSON
-                                additional_data = {k: v for k, v in item_data.items() 
-                                                 if k not in ["id", "created_at", "name", "company", 
-                                                             "email", "phone", "status", "license", "state"]}
-                                adjuster.additional_data = json.dumps(additional_data)
-                                
-                                self.session.commit()
-                                logger.info(f"Updated public adjuster in database: {adjuster.name}")
-                                updated = True
-                                
+                                # Try to find the adjuster by index
+                                if db_index is not None and 0 <= db_index < len(adjusters):
+                                    adjuster = adjusters[db_index]
+                                    # Update fields
+                                    adjuster.name = item_data.get("name", adjuster.name)
+                                    adjuster.company = item_data.get("company", adjuster.company)
+                                    adjuster.email = item_data.get("email", adjuster.email)
+                                    adjuster.phone = item_data.get("phone", adjuster.phone)
+                                    adjuster.status = item_data.get("status", adjuster.status)
+                                    adjuster.license = item_data.get("license", adjuster.license)
+                                    adjuster.state = item_data.get("state", adjuster.state)
+                                    
+                                    # Save additional data as JSON
+                                    additional_data = {k: v for k, v in item_data.items() 
+                                                     if k not in ["id", "created_at", "name", "company", 
+                                                                 "email", "phone", "status", "license", "state"]}
+                                    adjuster.additional_data = json.dumps(additional_data)
+                                    
+                                    session.commit()
+                                    logger.info(f"Updated public adjuster in database: {adjuster.name}")
+                                    updated = True
+                                    
                         elif board_name == "Employees":
                             # Get all employees for this board
-                            employees = self.session.query(Employee).filter_by(board_id=board_id).all()
-                            logger.info(f"Found {len(employees)} employees for board {board_id}")
-                            
-                            # Try to find the employee by index
-                            if db_index is not None and 0 <= db_index < len(employees):
-                                employee = employees[db_index]
-                                # Update fields
-                                employee.name = item_data.get("name", employee.name)
-                                employee.position = item_data.get("position", employee.position)
-                                employee.email = item_data.get("email", employee.email)
-                                employee.phone = item_data.get("phone", employee.phone)
-                                employee.status = item_data.get("status", employee.status)
-                                employee.department = item_data.get("department", employee.department)
-                                employee.hire_date = item_data.get("hire_date", employee.hire_date)
+                            with Session(self.engine) as session:
+                                employees = session.query(Employee).filter_by(board_id=board_id).all()
+                                logger.info(f"Found {len(employees)} employees for board {board_id}")
                                 
-                                # Save additional data as JSON
-                                additional_data = {k: v for k, v in item_data.items() 
-                                                 if k not in ["id", "created_at", "name", "position", 
-                                                             "email", "phone", "status", "department", "hire_date"]}
-                                employee.additional_data = json.dumps(additional_data)
-                                
-                                self.session.commit()
-                                logger.info(f"Updated employee in database: {employee.name}")
-                                updated = True
-                                
+                                # Try to find the employee by index
+                                if db_index is not None and 0 <= db_index < len(employees):
+                                    employee = employees[db_index]
+                                    # Update fields
+                                    employee.name = item_data.get("name", employee.name)
+                                    employee.position = item_data.get("position", employee.position)
+                                    employee.email = item_data.get("email", employee.email)
+                                    employee.phone = item_data.get("phone", employee.phone)
+                                    employee.status = item_data.get("status", employee.status)
+                                    employee.department = item_data.get("department", employee.department)
+                                    employee.hire_date = item_data.get("hire_date", employee.hire_date)
+                                    
+                                    # Save additional data as JSON
+                                    additional_data = {k: v for k, v in item_data.items() 
+                                                     if k not in ["id", "created_at", "name", "position", 
+                                                                 "email", "phone", "status", "department", "hire_date"]}
+                                    employee.additional_data = json.dumps(additional_data)
+                                    
+                                    session.commit()
+                                    logger.info(f"Updated employee in database: {employee.name}")
+                                    updated = True
+                                    
                         elif board_name == "Notes":
                             # Get all notes for this board
-                            notes = self.session.query(Note).filter_by(board_id=board_id).all()
-                            logger.info(f"Found {len(notes)} notes for board {board_id}")
-                            
-                            # Try to find the note by index
-                            if db_index is not None and 0 <= db_index < len(notes):
-                                note = notes[db_index]
-                                # Update fields
-                                note.title = item_data.get("name", note.title)
-                                note.content = item_data.get("content", note.content)
-                                note.client = item_data.get("client", note.client)
-                                note.status = item_data.get("status", note.status)
-                                note.category = item_data.get("category", note.category)
-                                note.created_by = item_data.get("owner", note.created_by)
-                                note.due_date = item_data.get("due_date", note.due_date)
+                            with Session(self.engine) as session:
+                                notes = session.query(Note).filter_by(board_id=board_id).all()
+                                logger.info(f"Found {len(notes)} notes for board {board_id}")
                                 
-                                # Save additional data as JSON
-                                additional_data = {k: v for k, v in item_data.items() 
-                                                 if k not in ["id", "created_at", "name", "content", 
-                                                             "client", "status", "category", "owner", "due_date"]}
-                                note.additional_data = json.dumps(additional_data)
-                                
-                                self.session.commit()
-                                logger.info(f"Updated note in database: {note.title}")
-                                updated = True
+                                # Try to find the note by index
+                                if db_index is not None and 0 <= db_index < len(notes):
+                                    note = notes[db_index]
+                                    # Update fields
+                                    note.title = item_data.get("name", note.title)
+                                    note.content = item_data.get("content", note.content)
+                                    note.client = item_data.get("client", note.client)
+                                    note.status = item_data.get("status", note.status)
+                                    note.category = item_data.get("category", note.category)
+                                    note.created_by = item_data.get("owner", note.created_by)
+                                    note.due_date = item_data.get("due_date", note.due_date)
+                                    
+                                    # Save additional data as JSON
+                                    additional_data = {k: v for k, v in item_data.items() 
+                                                     if k not in ["id", "created_at", "name", "content", 
+                                                                 "client", "status", "category", "owner", "due_date"]}
+                                    note.additional_data = json.dumps(additional_data)
+                                    
+                                    session.commit()
+                                    logger.info(f"Updated note in database: {note.title}")
+                                    updated = True
                         
                         # If we couldn't update a specific model, try the generic BoardData model
                         if not updated:
                             # Get all BoardData records for this board
-                            board_records = self.session.query(BoardData).filter_by(board_id=board_id).all()
-                            logger.info(f"Found {len(board_records)} BoardData records for board {board_id}")
-                            
-                            board_data = None
-                            
-                            # Try to find by index if we extracted it
-                            if db_index is not None and 0 <= db_index < len(board_records):
-                                board_data = board_records[db_index]
-                                logger.info(f"Found record by index: {board_data.id}")
-                            
-                            # If not found by index, try by name
-                            if not board_data:
-                                for record in board_records:
-                                    if record.name == item_data.get("name", ""):
-                                        board_data = record
-                                        logger.info(f"Found record by name: {board_data.id}")
-                                        break
-                            
-                            # If still not found, create a new record
-                            if not board_data:
-                                logger.info(f"Creating new BoardData record for item {item_data.get('name')}")
-                                board_data = BoardData(
-                                    board_id=board_id,
-                                    board_name=board_name,
-                                    name=item_data.get("name", f"Item {len(board_records)}")
-                                )
-                                self.session.add(board_data)
-                            
-                            # Update the record data
-                            if board_data:
-                                # Update name
-                                board_data.name = item_data.get("name", board_data.name)
+                            with Session(self.engine) as session:
+                                board_records = session.query(BoardData).filter_by(board_id=board_id).all()
+                                logger.info(f"Found {len(board_records)} BoardData records for board {board_id}")
                                 
-                                # Convert item data to JSON string
-                                data_dict = {k: v for k, v in item_data.items() if k not in ["id", "created_at"]}
-                                board_data.data = json.dumps(data_dict)
+                                board_data = None
                                 
-                                # Commit changes
-                                self.session.commit()
-                                logger.info(f"Updated generic board data in database: {item_data.get('name')}")
+                                # Try to find by index if we extracted it
+                                if db_index is not None and 0 <= db_index < len(board_records):
+                                    board_data = board_records[db_index]
+                                    logger.info(f"Found record by index: {board_data.id}")
                                 
+                                # If not found by index, try by name
+                                if not board_data:
+                                    for record in board_records:
+                                        if record.name == item_data.get("name", ""):
+                                            board_data = record
+                                            logger.info(f"Found record by name: {board_data.id}")
+                                            break
+                                
+                                # If still not found, create a new record
+                                if not board_data:
+                                    logger.info(f"Creating new BoardData record for item {item_data.get('name')}")
+                                    board_data = BoardData(
+                                        board_id=board_id,
+                                        board_name=board_name,
+                                        name=item_data.get("name", f"Item {len(board_records)}")
+                                    )
+                                    session.add(board_data)
+                                
+                                # Update the record data
+                                if board_data:
+                                    # Update name
+                                    board_data.name = item_data.get("name", board_data.name)
+                                    
+                                    # Convert item data to JSON string
+                                    data_dict = {k: v for k, v in item_data.items() if k not in ["id", "created_at"]}
+                                    board_data.data = json.dumps(data_dict)
+                                    
+                                    # Commit changes
+                                    session.commit()
+                                    logger.info(f"Updated generic board data in database: {item_data.get('name')}")
+                                    
                     except Exception as e:
                         logger.error(f"Error updating item in database: {str(e)}")
-                        self.session.rollback()
-                    
+                        with Session(self.engine) as session:
+                            session.rollback()
+                        
                     return item_data
             
             logger.warning(f"Item with ID {item_id} not found in board {board_id}")
@@ -690,7 +737,7 @@ class DataController:
         try:
             # Find the board ID
             board_id = None
-            for name, id in self.board_controller.board_map.items():
+            for name, id in self.board_map.items():
                 if name == board_name:
                     board_id = id
                     break
@@ -705,7 +752,8 @@ class DataController:
                 headers = [str(h) if h is not None and not pd.isna(h) else f"Column_{i}" for i, h in enumerate(data_items[0])]
             
             # Clear existing data for this board from the database
-            self.session.query(BoardData).filter_by(board_id=board_id).delete()
+            with Session(self.engine) as session:
+                session.query(BoardData).filter_by(board_id=board_id).delete()
             
             # Convert Excel data to items and store in database
             items = []
@@ -738,7 +786,7 @@ class DataController:
                     name=name,
                     data=json.dumps(row_data)
                 )
-                self.session.add(board_data)
+                session.add(board_data)
                 
                 # Create item for UI display
                 item = {
@@ -754,7 +802,7 @@ class DataController:
                 items.append(item)
             
             # Commit changes to database
-            self.session.commit()
+            session.commit()
             
             # Replace mock items with imported data
             self._mock_items[board_id] = items
@@ -765,7 +813,8 @@ class DataController:
         except Exception as e:
             logger.error(f"Error importing {board_name} Excel data: {str(e)}")
             # Rollback in case of error
-            self.session.rollback()
+            with Session(self.engine) as session:
+                session.rollback()
             return False
     
     def load_board_data_from_database(self, board_id: str) -> List[Dict[str, Any]]:
@@ -780,10 +829,11 @@ class DataController:
         """
         try:
             # Get the board name
-            board_name = self.board_controller.get_board_name(board_id) or "Unknown"
+            board_name = self.get_board_name(board_id) or "Unknown"
             
             # Query board data from database
-            board_data_list = self.session.query(BoardData).filter_by(board_id=board_id).all()
+            with Session(self.engine) as session:
+                board_data_list = session.query(BoardData).filter_by(board_id=board_id).all()
             
             # Convert to items format
             items = []
@@ -815,6 +865,14 @@ class DataController:
             logger.error(f"Error loading data from database for board {board_id}: {str(e)}")
             return []
     
+    def safe_float(self, val):
+        try:
+            if val is None or val == 'N/A':
+                return 0.0
+            return float(val)
+        except Exception:
+            return 0.0
+
     def load_claims_from_database(self, board_id: str) -> List[Dict[str, Any]]:
         """
         Load claims from the database for a specific board.
@@ -827,35 +885,74 @@ class DataController:
         """
         try:
             # Query claims from database
-            claims = self.session.query(Claim).filter_by(board_id=board_id).all()
+            with Session(self.engine) as session:
+                claims = session.query(Claim).filter_by(board_id=board_id).all()
             
             # Convert to items format
             items = []
             for i, claim in enumerate(claims):
-                # Create base item
-                item = {
-                    "id": f"{board_id}_{i}",
-                    "name": claim.name,
-                    "status": claim.status,
-                    "created_at": claim.created_at.strftime("%Y-%m-%d"),
-                    "owner": claim.person,
-                    "claim_number": claim.claim_number if claim.claim_number else claim.file_number,
-                    "insured": claim.client,
-                    "email": claim.email,
-                    "claim_status": claim.claim_status,
-                    "amount": 0.0  # Default value
-                }
-                
-                # Add additional data if available
-                if claim.additional_data:
-                    try:
-                        additional_data = json.loads(claim.additional_data)
-                        for key, value in additional_data.items():
-                            item[key] = value
-                    except:
-                        pass
-                
-                items.append(item)
+                try:
+                    # Create item dictionary with all non-date fields first
+                    item = {
+                        "id": f"{board_id}_{i}",
+                        "name": claim.name or "N/A",
+                        "status": claim.status or "New",
+                        "owner": claim.person or "Unassigned",
+                        "claim_number": claim.claim_number or "N/A",
+                        "person": claim.person or "N/A",
+                        "claim_status": claim.claim_status or "N/A",
+                        "client": claim.client or "N/A",
+                        "email": claim.email or "N/A",
+                        "file_number": claim.file_number or "N/A",
+                        "policy_number": claim.policy_number or "N/A",
+                        "dup_claim_number": claim.dup_claim_number or "N/A",
+                        "loss_type": claim.loss_type or "N/A",
+                        "claim_location": claim.claim_location or "N/A",
+                        "claim_address": claim.claim_address or "N/A",
+                        "insured_amount": self.safe_float(claim.insured_amount),
+                        "initial_offer": self.safe_float(claim.initial_offer),
+                        "final_settlement": self.safe_float(claim.final_settlement),
+                        "pa_fee_percent": self.safe_float(claim.pa_fee_percent),
+                        "pa_fee_amount": self.safe_float(claim.pa_fee_amount),
+                        "insurance_company": claim.insurance_company or "N/A",
+                        "insurance_adjuster": claim.insurance_adjuster or "N/A",
+                        "notes": claim.notes or "N/A",
+                        "loss_title": claim.loss_title or "N/A",
+                        "adjuster_initials": claim.adjuster_initials or "N/A",
+                        "claim_street": claim.claim_street or "N/A",
+                        "claim_city": claim.claim_city or "N/A",
+                        "loss_description": claim.loss_description or "N/A",
+                        "insurance_companies": claim.insurance_companies or "N/A",
+                        "insurance_representatives": claim.insurance_representatives or "N/A",
+                        "treaty_year": claim.treaty_year or "N/A",
+                        "treaty_type": claim.treaty_type or "N/A",
+                        "loss_prov_state": claim.loss_prov_state or "N/A",
+                        "reserve": self.safe_float(claim.reserve)
+                    }
+                    
+                    # Skip all date fields for now
+                    date_fields = [
+                        'received_on', 'loss_date', 'claim_filed_date', 'last_activity',
+                        'deadline_date', 'stat_limitation', 'first_contact', 'next_rpt_due'
+                    ]
+                    for field in date_fields:
+                        item[field] = "N/A"
+                    
+                    # Add any additional data
+                    if claim.additional_data:
+                        try:
+                            additional_data = json.loads(claim.additional_data)
+                            # Skip date fields in additional data
+                            for key, value in additional_data.items():
+                                if not any(date_term in key.lower() for date_term in ['date', 'due', 'time']):
+                                    item[key] = value
+                        except json.JSONDecodeError:
+                            logger.warning(f"Could not parse additional data for claim {claim.id}")
+                    
+                    items.append(item)
+                except Exception as e:
+                    logger.error(f"Error processing claim {i}: {str(e)}")
+                    continue
             
             # Cache items
             self._mock_items[board_id] = items
@@ -878,7 +975,8 @@ class DataController:
         """
         try:
             # Query clients from database
-            clients = self.session.query(Client).filter_by(board_id=board_id).all()
+            with Session(self.engine) as session:
+                clients = session.query(Client).filter_by(board_id=board_id).all()
             
             # Convert to items format
             items = []
@@ -927,7 +1025,8 @@ class DataController:
         """
         try:
             # Query public adjusters from database
-            adjusters = self.session.query(PublicAdjuster).filter_by(board_id=board_id).all()
+            with Session(self.engine) as session:
+                adjusters = session.query(PublicAdjuster).filter_by(board_id=board_id).all()
             
             # Convert to items format
             items = []
@@ -977,7 +1076,8 @@ class DataController:
         """
         try:
             # Query employees from database
-            employees = self.session.query(Employee).filter_by(board_id=board_id).all()
+            with Session(self.engine) as session:
+                employees = session.query(Employee).filter_by(board_id=board_id).all()
             
             # Convert to items format
             items = []
@@ -1027,7 +1127,8 @@ class DataController:
         """
         try:
             # Query notes from database
-            notes = self.session.query(Note).filter_by(board_id=board_id).all()
+            with Session(self.engine) as session:
+                notes = session.query(Note).filter_by(board_id=board_id).all()
             
             # Convert to items format
             items = []
@@ -1063,4 +1164,57 @@ class DataController:
             return items
         except Exception as e:
             logger.error(f"Error loading notes from database: {str(e)}")
-            return [] 
+            return []
+    
+    def get_board_views(self, board_id: str) -> list[BoardView]:
+        """Get all views for a board."""
+        try:
+            with Session(self.engine) as session:
+                return session.query(BoardView).filter(BoardView.board_id == board_id).all()
+        except Exception as e:
+            logging.error(f"Error getting board views: {str(e)}")
+            return []
+            
+    def create_board_view(self, board_id: str) -> BoardView:
+        """Create a new board view."""
+        try:
+            with Session(self.engine) as session:
+                # Get board name for the default view name
+                board_name = self.get_board_name(board_id) or "Unknown"
+                view = BoardView(
+                    board_id=board_id,
+                    name=f"Default {board_name} View",  # Add default name
+                    is_default=False,
+                    column_order=None,
+                    hidden_columns=None,
+                    column_widths=None
+                )
+                session.add(view)
+                session.commit()
+                session.refresh(view)
+                return view
+        except Exception as e:
+            logging.error(f"Error creating board view: {str(e)}")
+            raise
+            
+    def save_board_view(self, view: BoardView):
+        """Save a board view."""
+        try:
+            with Session(self.engine) as session:
+                session.merge(view)
+                session.commit()
+        except Exception as e:
+            logging.error(f"Error saving board view: {str(e)}")
+            raise
+            
+    def delete_board_view(self, view_id: int):
+        """Delete a board view."""
+        try:
+            with Session(self.engine) as session:
+                view = session.query(BoardView).filter(BoardView.id == view_id).first()
+                if view:
+                    session.delete(view)
+                    session.commit()
+        except Exception as e:
+            logging.error(f"Error deleting board view: {str(e)}")
+            raise 

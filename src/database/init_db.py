@@ -6,8 +6,8 @@ import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.models.feedback import Base as FeedbackBase
-from src.models.settings import Base as SettingsBase
+from src.models.feedback import Feedback, Base as FeedbackBase
+from src.models.settings import SettingsBase
 
 # Get logger
 logger = logging.getLogger("monday_uploader.database")

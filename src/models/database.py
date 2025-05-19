@@ -224,11 +224,43 @@ class Claim(Base):
     email = Column(String(255), nullable=True)
     status = Column(String(50), nullable=True)
     file_number = Column(String(50), nullable=True)
+    received_on = Column(String(50), nullable=True)
+    policy_number = Column(String(50), nullable=True)
+    dup_claim_number = Column(String(50), nullable=True)
+    loss_date = Column(String(50), nullable=True)
+    claim_filed_date = Column(String(50), nullable=True)
+    loss_type = Column(String(100), nullable=True)
+    claim_location = Column(String(255), nullable=True)
+    claim_address = Column(String(255), nullable=True)
+    insured_amount = Column(Float, nullable=True)
+    initial_offer = Column(Float, nullable=True)
+    final_settlement = Column(Float, nullable=True)
+    pa_fee_percent = Column(Float, nullable=True)
+    pa_fee_amount = Column(Float, nullable=True)
+    insurance_company = Column(String(255), nullable=True)
+    insurance_adjuster = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    loss_title = Column(String(255), nullable=True)
+    last_activity = Column(String(50), nullable=True)
+    adjuster_initials = Column(String(50), nullable=True)
+    claim_street = Column(String(255), nullable=True)
+    claim_city = Column(String(255), nullable=True)
+    loss_description = Column(Text, nullable=True)
+    deadline_date = Column(String(50), nullable=True)
+    insurance_companies = Column(String(255), nullable=True)
+    insurance_representatives = Column(String(255), nullable=True)
+    treaty_year = Column(String(50), nullable=True)
+    treaty_type = Column(String(100), nullable=True)
+    stat_limitation = Column(String(50), nullable=True)
+    loss_prov_state = Column(String(50), nullable=True)
+    reserve = Column(Float, nullable=True)
+    first_contact = Column(String(50), nullable=True)
+    next_rpt_due = Column(String(50), nullable=True)
     # Store any additional columns as JSON
     additional_data = Column(Text, nullable=True)
     board_id = Column(String(50), nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(String(50), default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    updated_at = Column(String(50), default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"), onupdate=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     
     def __repr__(self):
         return f"<Claim(id={self.id}, name='{self.name}', claim_number='{self.claim_number}')>"
@@ -338,6 +370,85 @@ class BoardData(Base):
     def __repr__(self):
         return f"<BoardData(id={self.id}, board_name='{self.board_name}', name='{self.name}')>"
 
+# Add Insurance Company model for foreign key reference
+class InsuranceCompany(Base):
+    """Insurance company model."""
+    
+    __tablename__ = 'insurance_companies'
+    
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    address = Column(String(255), nullable=True)
+    phone = Column(String(50), nullable=True)
+    email = Column(String(100), nullable=True)
+    website = Column(String(255), nullable=True)
+    contact_person = Column(String(100), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    # Relationships
+    policies = relationship('Policy', back_populates='carrier')
+    
+    def __repr__(self):
+        return f"<InsuranceCompany(id={self.id}, name='{self.name}')>"
+
+# Add Policy model
+class Policy(Base):
+    """Insurance policy model."""
+    
+    __tablename__ = 'policies'
+    
+    id = Column(Integer, primary_key=True)
+    policy_number = Column(String(50), nullable=False, unique=True)
+    policy_type = Column(String(50), nullable=False)
+    carrier_id = Column(Integer, ForeignKey("insurance_companies.id"), nullable=True)
+    
+    # Coverage amounts
+    coverage_a = Column(Float, nullable=True)  # Dwelling
+    coverage_b = Column(Float, nullable=True)  # Other Structures
+    coverage_c = Column(Float, nullable=True)  # Personal Property
+    coverage_d = Column(Float, nullable=True)  # Loss of Use
+    coverage_e = Column(Float, nullable=True)  # Personal Liability
+    coverage_f = Column(Float, nullable=True)  # Medical Payments
+    
+    # Policy details
+    deductible = Column(Float, nullable=True)
+    hurricane_deductible = Column(Float, nullable=True)
+    replacement_cost = Column(Boolean, default=False)
+    law_ordinance = Column(Boolean, default=False)
+    
+    # Dates
+    effective_date = Column(DateTime, nullable=True)
+    expiration_date = Column(DateTime, nullable=True)
+    
+    # Relationships
+    carrier = relationship("InsuranceCompany", back_populates="policies")
+    
+    def __repr__(self):
+        return f"<Policy(id={self.id}, number='{self.policy_number}', type='{self.policy_type}')>"
+
+class BoardView(Base):
+    """Board view configuration."""
+    
+    __tablename__ = 'board_views'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    board_id = Column(String(50), ForeignKey('boards.id'), nullable=False)
+    name = Column(String(255), nullable=False)
+    is_default = Column(Boolean, default=False)
+    column_order = Column(Text, nullable=True)  # JSON array of column names
+    hidden_columns = Column(Text, nullable=True)  # JSON array of hidden column names
+    column_widths = Column(Text, nullable=True)  # JSON object mapping column names to widths
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    # Relationships
+    board = relationship('Board', backref='views')
+    
+    def __repr__(self):
+        return f"<BoardView(id={self.id}, name='{self.name}', board_id='{self.board_id}')>"
+
 def init_db(db_path: str) -> 'sqlalchemy.engine.Engine':
     """
     Initialize the database and return the SQLAlchemy engine.
@@ -358,6 +469,20 @@ def init_db(db_path: str) -> 'sqlalchemy.engine.Engine':
     
     # Create tables if they don't exist
     Base.metadata.create_all(engine)
+    
+    # Import and initialize settlement models (with error handling)
+    try:
+        from src.models.settlement_models import DamageCategory, DamageItem, DamageEntry, SettlementCalculation
+        # Create tables for settlement models
+        DamageCategory.metadata.create_all(engine)
+        DamageItem.metadata.create_all(engine)
+        DamageEntry.metadata.create_all(engine)
+        SettlementCalculation.metadata.create_all(engine)
+        logger.info("Settlement models initialized successfully")
+    except ImportError as e:
+        logger.warning(f"Settlement models could not be imported: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error initializing settlement models: {str(e)}")
     
     logger.info(f"Database initialized at: {db_path}")
     
