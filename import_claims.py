@@ -1,155 +1,138 @@
 #!/usr/bin/env python3
 """
-Claims Data Import Utility
-
-Imports claims data from an Excel file into the Monday Uploader database
+Standalone script to import Claims data from Excel to the database.
 """
-
 import os
-import sqlite3
-import pandas as pd
-import json
-from datetime import datetime
-import uuid
 import sys
+import pandas as pd
+import logging
+import json
+import sqlite3
+from datetime import datetime
 
-# Source Excel file
-EXCEL_FILE = r'C:\Users\mfabi\OneDrive\Desktop\app\PA_Claims_FPA_Claims_1747602640.xlsx'
+# Configure basic logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# Database file
-DB_FILE = 'monday_sync.db'
+# Excel file path
+EXCEL_PATH = r"C:\Users\mfabi\OneDrive\Desktop\app\PA_Claims_FPA_Claims_1747602640.xlsx"
+DB_PATH = 'monday_sync.db'
+BOARD_ID = "8903072880"
+BOARD_NAME = "Claims"
 
-def generate_unique_id():
-    """Generate a unique ID for database records"""
-    return str(uuid.uuid4())
+def create_tables_if_not_exist(cursor):
+    """Create necessary tables if they don't exist"""
+    # Create BoardData table if it doesn't exist
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS board_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        board_id TEXT NOT NULL,
+        board_name TEXT NOT NULL,
+        name TEXT NOT NULL,
+        data TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    
+    # Create index for faster lookups
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_board_data_board_id ON board_data(board_id)')
 
-def format_value(value, col_type):
-    """Format a value based on its column type"""
-    if pd.isna(value):
-        return None
-        
+def import_excel_to_db():
+    """Read Excel file and import to database"""
     try:
-        if col_type == "date":
-            if isinstance(value, (datetime, pd.Timestamp)):
-                return value.strftime("%Y-%m-%d")
-            return str(value)
-        elif col_type == "number":
-            if isinstance(value, (int, float)):
-                return f"{value:.2f}"
-            return str(value)
-        else:
-            return str(value)
-    except:
-        return str(value)
-
-def main():
-    """Main entry point"""
-    try:
-        # Read Excel file
-        print(f"Reading Excel file: {EXCEL_FILE}")
-        # Read all columns from A to BG (1 to 59)
-        df = pd.read_excel(EXCEL_FILE, header=4, usecols="A:BG")
+        # Check if file exists
+        if not os.path.exists(EXCEL_PATH):
+            logger.error(f"Excel file not found at: {EXCEL_PATH}")
+            return False
+            
+        logger.info(f"Found Excel file at: {EXCEL_PATH}")
         
-        # Connect to database
-        print(f"Connecting to database: {DB_FILE}")
-        conn = sqlite3.connect(DB_FILE)
+        # Try to read the file with headers at row 5 (index 4)
+        df = pd.read_excel(EXCEL_PATH, header=4)
+        
+        # Basic info about the DataFrame
+        logger.info(f"Excel file read successfully")
+        logger.info(f"DataFrame shape: {df.shape} (rows, columns)")
+        logger.info(f"Column headers: {', '.join(df.columns.tolist())}")
+        
+        # Connect to SQLite database
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Get or create board ID for claims
-        board_id = "8903072880"  # Updated to match the app's DEFAULT_BOARDS
-        cursor.execute("SELECT id FROM boards WHERE id = ?", (board_id,))
-        if not cursor.fetchone():
-            cursor.execute(
-                "INSERT INTO boards (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (board_id, "Claims", datetime.now(), datetime.now())
-            )
+        # Ensure tables exist
+        create_tables_if_not_exist(cursor)
         
-        # Clear existing items and column values for this board
-        print("Clearing existing items...")
-        cursor.execute("SELECT id FROM items WHERE board_id = ?", (board_id,))
-        item_ids = [row[0] for row in cursor.fetchall()]
-        if item_ids:
-            # Delete from item_column_values for these item_ids
-            cursor.executemany("DELETE FROM item_column_values WHERE item_id = ?", [(item_id,) for item_id in item_ids])
-        cursor.execute("DELETE FROM items WHERE board_id = ?", (board_id,))
+        # Clear existing data for this board
+        cursor.execute("DELETE FROM board_data WHERE board_id = ?", (BOARD_ID,))
+        logger.info(f"Cleared existing records for board {BOARD_NAME}")
         
-        # Get all column names from the Excel file
-        excel_columns = df.columns.tolist()
+        # Get column headers
+        headers = df.columns.tolist()
         
-        # Create columns in database based on Excel headers
-        column_types = {}
-        for col_name in excel_columns:
-            col_id = col_name.lower().replace(" ", "_").replace(".", "_")
-            col_type = "text"  # Default type
-            
-            # Determine column type based on content
-            if "date" in col_name.lower() or "due" in col_name.lower():
-                col_type = "date"
-            elif any(term in col_name.lower() for term in ["amount", "fee", "percent", "number"]):
-                col_type = "number"
-            
-            column_types[col_id] = col_type
-            
+        # Convert Excel data to records
+        records_imported = 0
+        for i, row in df.iterrows():
             try:
-                cursor.execute(
-                    "INSERT OR REPLACE INTO board_columns (id, board_id, title, type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (col_id, board_id, col_name, col_type, datetime.now(), datetime.now())
-                )
-            except sqlite3.Error as e:
-                print(f"Error creating column {col_id}: {str(e)}")
-                continue
-        
-        # Import data from Excel to database
-        total_rows = len(df)
-        print(f"Importing {total_rows} rows...")
-        
-        for index, row in df.iterrows():
-            try:
-                # Generate a unique item ID
-                item_id = f"{board_id}_{index}"
+                # Extract primary name field (first column)
+                name = str(row['Name']) if not pd.isna(row['Name']) else f"{BOARD_NAME} Item {i+1}"
                 
-                # Create item name from the first column or use a default
-                item_name = str(row.iloc[0]) if not pd.isna(row.iloc[0]) else f"Claim {index+1}"
-                
-                # Create the item record
-                cursor.execute(
-                    "INSERT INTO items (id, board_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                    (item_id, board_id, item_name, datetime.now(), datetime.now())
-                )
-                
-                # Create column values for the item
-                for col_name in excel_columns:
-                    col_id = col_name.lower().replace(" ", "_").replace(".", "_")
-                    value = row[col_name]
-                    col_type = column_types.get(col_id, "text")
+                # Create a dictionary for all fields
+                row_data = {}
+                for header in headers:
+                    value = row[header]
+                    # Convert NaN to empty string
+                    if pd.isna(value):
+                        value = ""
+                    # Convert datetime objects to string
+                    elif isinstance(value, pd.Timestamp):
+                        value = value.strftime("%Y-%m-%d %H:%M:%S")
+                    # Convert other values to string
+                    else:
+                        value = str(value)
                     
-                    formatted_value = format_value(value, col_type)
-                    if formatted_value is not None:
-                        try:
-                            cursor.execute(
-                                "INSERT INTO item_column_values (item_id, column_id, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                                (item_id, col_id, formatted_value, datetime.now(), datetime.now())
-                            )
-                        except sqlite3.Error as e:
-                            print(f"Error inserting value for {col_id} in row {index}: {str(e)}")
-                            continue
+                    row_data[header] = value
                 
-                print(f"Imported claim {index + 1}/{total_rows}: {item_name}")
+                # Convert to JSON string
+                json_data = json.dumps(row_data)
+                
+                # Insert into database
+                cursor.execute(
+                    "INSERT INTO board_data (board_id, board_name, name, data) VALUES (?, ?, ?, ?)",
+                    (BOARD_ID, BOARD_NAME, name, json_data)
+                )
+                records_imported += 1
+                
+                # Log progress every 10 records
+                if records_imported % 10 == 0:
+                    logger.info(f"Imported {records_imported} records so far...")
                 
             except Exception as e:
-                print(f"Error importing row {index}: {str(e)}")
+                logger.error(f"Error processing row {i}: {str(e)}")
                 continue
         
-        # Commit changes
+        # Commit all changes
         conn.commit()
-        print(f"Import completed successfully. Imported {total_rows} claims.")
+        logger.info(f"Successfully imported {records_imported} records into {BOARD_NAME} board")
+        
+        # Close connection
+        conn.close()
+        return True
         
     except Exception as e:
-        print(f"Error during import: {str(e)}")
-        sys.exit(1)
-    finally:
-        if 'conn' in locals():
-            conn.close()
+        logger.error(f"Error importing Excel data: {str(e)}")
+        return False
+
+def main():
+    """Run the import process"""
+    logger.info("Starting Excel import process")
+    
+    success = import_excel_to_db()
+    
+    if success:
+        logger.info("Import completed successfully. The data should now be available in the application.")
+    else:
+        logger.error("Import failed. Please check the logs for details.")
 
 if __name__ == "__main__":
     main() 

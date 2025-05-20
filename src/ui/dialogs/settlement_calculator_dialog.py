@@ -35,7 +35,7 @@ except ImportError:
 # Try to import the models and controllers
 try:
     from controllers.policy_controller import PolicyController
-    from models.settlement_models import SettlementCalculation
+    from src.models.settlement_models import SettlementCalculation
 except ImportError:
     try:
         from src.controllers.policy_controller import PolicyController

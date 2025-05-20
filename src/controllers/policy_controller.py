@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 # Import models - try different import paths for flexibility
 try:
-    from models.database import Policy, InsuranceCompany
+    from src.models.database import Policy, InsuranceCompany
 except ImportError:
     try:
         from src.models.database import Policy, InsuranceCompany

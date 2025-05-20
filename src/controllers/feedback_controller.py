@@ -1,5 +1,5 @@
 """
-Feedback controller for handling user feedback.
+Feedback controller for managing user feedback.
 """
 
 import os
@@ -9,12 +9,13 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select, func
+from sqlalchemy.exc import SQLAlchemyError
 
-from models.feedback import Feedback
+from src.models.feedback import Feedback
 
 # Get logger
-logger = logging.getLogger("monday_uploader.feedback_controller")
+logger = logging.getLogger("monday_uploader.feedback")
 
 class FeedbackController:
     """Controller for handling user feedback."""

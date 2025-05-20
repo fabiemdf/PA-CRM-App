@@ -2,6 +2,15 @@
 
 A modern, feature-rich Monday.com integration application built with PySide6.
 
+## Version History
+
+### Stable 3 (Current)
+- Added support for importing data for all available boards
+- Fixed header row handling in Excel imports
+- Added automatic board selection on startup
+- Improved error handling for data imports
+- Fixed UI issues with board display
+
 ## Features
 
 - Modern PySide6-based user interface
@@ -13,6 +22,7 @@ A modern, feature-rich Monday.com integration application built with PySide6.
 - Comprehensive feedback system
 - Offline mode support
 - Auto-sync capabilities
+- Data import from Excel files for all boards
 
 ## Requirements
 
@@ -47,6 +57,14 @@ Run the application:
 ```bash
 python src/main.py
 ```
+
+### Importing Data
+
+1. Click on "File" > "Import Board Data..." in the menu
+2. Select the Excel file you want to import
+3. Choose which board to import the data into from the popup menu
+4. Specify which row contains the column headers (usually row 5)
+5. The data will be imported and the board will be refreshed automatically
 
 ## Configuration
 

@@ -1,8 +1,8 @@
 import json
 from typing import List, Optional
 from datetime import datetime
-from models.board_view import BoardView
-from database.database_manager import DatabaseManager
+from src.models.board_view import BoardView
+from src.database.database_manager import DatabaseManager
 
 class ViewController:
     def __init__(self, db_manager: DatabaseManager):

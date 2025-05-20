@@ -8,25 +8,26 @@ import os
 import sys
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, Any
 import json
 import pandas as pd
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDockWidget, QMessageBox, 
     QFileDialog, QMenu, QTabWidget, QToolBar, 
-    QStatusBar, QDialog, QStyle
+    QStatusBar, QDialog, QStyle, QInputDialog
 )
 from PySide6.QtCore import Qt, QSettings, QSize, QPoint
-from PySide6.QtGui import QIcon, QAction, QKeySequence
+from PySide6.QtGui import QIcon, QAction, QKeySequence, QCursor
 
 try:
     # Application modules
-    from ui.main_window import MainWindow
-    from models.database import init_db
+    from src.ui.main_window import MainWindow
+    from src.models.database import init_db, CalendarEvent
     from utils.logger import setup_logger
     from utils.error_handling import MondayError, handle_error
     from controllers.feedback_controller import FeedbackController
+    from controllers.data_controller import DataController
 except ImportError as e:
     print(f"Error importing application modules: {str(e)}")
     QMessageBox.critical(
@@ -152,6 +153,112 @@ def create_sample_calendar_events(main_window):
     except Exception as e:
         logger.error(f"Error creating sample calendar events: {str(e)}")
 
+def import_board_data(main_window):
+    """Import data from Excel files into Monday boards."""
+    try:
+        # Let user select the Excel file
+        file_dialog = QFileDialog(main_window)
+        file_dialog.setWindowTitle("Select Excel File to Import")
+        file_dialog.setFileMode(QFileDialog.ExistingFile)
+        file_dialog.setNameFilter("Excel files (*.xlsx *.xls)")
+        
+        if not file_dialog.exec():
+            return  # User canceled
+            
+        selected_files = file_dialog.selectedFiles()
+        if not selected_files:
+            return
+            
+        excel_path = selected_files[0]
+        logger.info(f"Selected Excel file: {excel_path}")
+        
+        # Let user select which board to import to
+        available_boards = list(DEFAULT_BOARDS.keys())
+        # Create a menu with board options
+        board_menu = QMenu(main_window)
+        
+        for board_name in available_boards:
+            action = board_menu.addAction(board_name)
+            action.setData(board_name)
+        
+        # Show the menu at the cursor position
+        selected_action = board_menu.exec(QCursor.pos())
+        
+        if not selected_action:
+            return  # User canceled
+            
+        selected_board = selected_action.data()
+        logger.info(f"Selected board: {selected_board}")
+        
+        # Import the data
+        if 'data' in main_window.controllers and main_window.controllers['data'].engine is not None:
+            logger.info(f"Reading {selected_board} Excel file...")
+            
+            # Ask user which row contains headers
+            header_row, ok = QInputDialog.getInt(
+                main_window,
+                "Header Row",
+                f"Which row contains the column headers? (1-based)",
+                5,  # Default to row 5
+                1,  # Minimum value
+                20  # Maximum value
+            )
+            
+            if not ok:
+                return  # User canceled
+                
+            # Convert to 0-based index for pandas
+            header_index = header_row - 1
+            
+            # Read the Excel file
+            df = pd.read_excel(excel_path, header=header_index)
+            logger.info(f"Excel file read successfully. Found {len(df.columns)} columns and {len(df)} rows")
+            logger.info(f"Column headers: {', '.join(df.columns.tolist())}")
+            
+            # Get the column headers
+            headers = df.columns.tolist()
+            
+            # Extract data items
+            data_items = df.values.tolist()
+            logger.info(f"Extracted {len(data_items)} data rows")
+            
+            # Import the data
+            data_controller = main_window.controllers['data']
+            
+            # Inject headers as the first row of data_items to match existing processing
+            data_with_headers = [headers] + data_items
+            success = data_controller.import_excel_data_for_board(selected_board, data_with_headers)
+            
+            if success:
+                logger.info(f"Successfully imported {selected_board} data")
+                
+                # Refresh the board in the UI
+                board_id = main_window.controllers['board'].get_board_id(selected_board)
+                if board_id:
+                    main_window._on_select_board(board_id)
+                    logger.info(f"{selected_board} board refreshed in UI")
+                
+                # Show success message
+                QMessageBox.information(
+                    main_window,
+                    "Import Successful",
+                    f"Successfully imported {len(data_items)} {selected_board} records from Excel file."
+                )
+            else:
+                logger.error(f"Failed to import {selected_board} data")
+                QMessageBox.critical(
+                    main_window,
+                    "Import Error",
+                    f"Failed to import {selected_board} data. Check the logs for details."
+                )
+    except Exception as e:
+        logger.error(f"Error importing data: {str(e)}")
+        QMessageBox.critical(
+            main_window,
+            "Import Error",
+            f"Error importing data: {str(e)}"
+        )
+
 def main():
     """Application entry point"""
     try:
@@ -169,35 +276,22 @@ def main():
         
         # Initialize database
         db_path = 'monday_sync.db'
+        engine = None
         try:
-            engine = init_db(db_path)
-            logger.info(f"Database initialized: {db_path}")
+            from sqlalchemy import create_engine
+            engine = create_engine(f'sqlite:///{db_path}')
+            logger.info(f"Database engine created for: {db_path}")
         except Exception as e:
-            logger.error(f"Database initialization failed: {str(e)}")
+            logger.error(f"Database engine creation failed: {str(e)}")
             QMessageBox.critical(
                 None, 
                 "Database Error", 
-                f"Failed to initialize database: {str(e)}"
+                f"Failed to create database engine: {str(e)}"
             )
-            return 1
         
         # Path to the Excel files
         excel_files = {
-            "Claims": "data/excel/PA_Claims_FPA_Claims.xlsx",
-            "Clients": "data/excel/Clients_FPA_Clients.xlsx",
-            "Public Adjusters": "data/excel/Public_Adjusters_FPA.xlsx",
-            "Employees": "data/excel/Employees_Group_Title.xlsx",
-            "Notes": "data/excel/Notes_Monday_Notes.xlsx",
-            "Insurance Representatives": "data/excel/Insurance_Representatives_Fraser.xlsx",
-            "Police Report": "data/excel/Police_Report_Group_Title.xlsx",
-            "Damage Estimates": "data/excel/Damage_Estimates_Fraser.xlsx",
-            "Communications": "data/excel/Communications_Fraser.xlsx",
-            "Leads": "data/excel/Leads_Group_Title.xlsx",
-            "Documents": "data/excel/Documents_Fraser.xlsx",
-            "Tasks": "data/excel/Tasks_Group_Title.xlsx",
-            "Insurance Companies": "data/excel/Insurance_Companies_Fraser.xlsx",
-            "Contacts": "data/excel/Contacts_Business_Contacts.xlsx",
-            "Marketing Activities": "data/excel/Marketing_Activities_This_week.xlsx"
+            "Claims": r"C:\Users\mfabi\OneDrive\Desktop\app\PA_Claims_FPA_Claims_1747602640.xlsx"
         }
 
         # Initialize controllers
@@ -207,46 +301,116 @@ def main():
         main_window = MainWindow(engine, DEFAULT_BOARDS)
         main_window.show()
 
-        # Process all Excel files
-        for board_name, excel_path in excel_files.items():
-            try:
-                # Check if file exists
-                if not os.path.exists(excel_path):
-                    logger.warning(f"Excel file not found: {excel_path}")
-                    continue
-
-                # Read the Excel file
-                df = pd.read_excel(excel_path)
-                
-                # Extract board name from first cell or use the key as default
-                board_name_from_excel = df.iloc[0, 0] if not pd.isna(df.iloc[0, 0]) else board_name
-                logger.info(f"Processing {board_name} board from {excel_path}")
-                
-                # Extract data items - skip any metadata rows
-                data_items = df.values.tolist()
-                
-                # Import the data into the board
-                if 'data' in main_window.controllers:
-                    success = main_window.controllers['data'].import_excel_data_for_board(board_name, data_items)
-                    if success:
-                        logger.info(f"Successfully imported Excel data into {board_name} board")
-                        
-                        # Refresh the board in the UI
-                        board_id = main_window.controllers['board'].get_board_id(board_name)
-                        if board_id:
-                            # Only select the Claims board by default
-                            if board_name == "Claims":
-                                main_window._on_select_board(board_id)
-                    else:
-                        logger.error(f"Failed to import Excel data into {board_name} board")
+        # Select the first available board to show it initially
+        try:
+            if 'board' in main_window.controllers and main_window.controllers['board']:
+                # Get the first board from the available boards
+                boards = main_window.controllers['board'].get_boards()
+                if boards:
+                    first_board_name = next(iter(boards))
+                    first_board_id = boards[first_board_name]
+                    logger.info(f"Selecting initial board: {first_board_name} ({first_board_id})")
                     
-            except Exception as e:
-                logger.error(f"Error processing {board_name} Excel file: {str(e)}")
+                    # Tell the main window to select this board
+                    main_window._on_board_selected(first_board_id)
+                    
+                    # Also select it in the boards panel
+                    if "boards" in main_window.panels:
+                        main_window.panels["boards"].select_board(first_board_id)
+        except Exception as e:
+            logger.error(f"Error selecting initial board: {str(e)}")
+            # Non-critical error, we can continue
+
+        # Process Claims Excel file
+        claims_path = excel_files["Claims"]
+        try:
+            # Check if file exists
+            if not os.path.exists(claims_path):
+                logger.error(f"Claims Excel file not found at: {claims_path}")
                 QMessageBox.warning(
                     main_window,
-                    "Excel Import Warning",
-                    f"Could not process {board_name} Excel file: {str(e)}\n\nPlease ensure the file exists at: {excel_path}"
+                    "File Not Found",
+                    f"Claims Excel file not found at:\n{claims_path}"
                 )
+            else:
+                logger.info(f"Found Claims Excel file at: {claims_path}")
+                
+                try:
+                    # Read the Excel file - Note: Headers start at row 5
+                    logger.info("Reading Claims Excel file...")
+                    df = pd.read_excel(claims_path, header=4)  # header=4 means row 5 is the header
+                    logger.info(f"Excel file read successfully. Found {len(df.columns)} columns and {len(df)} rows")
+                    logger.info(f"Column headers: {', '.join(df.columns.tolist())}")
+                    
+                    # Get the column headers
+                    headers = df.columns.tolist()
+                    
+                    # Extract data items (all rows, not including headers since they're already extracted)
+                    data_items = df.values.tolist()
+                    logger.info(f"Extracted {len(data_items)} data rows")
+                    
+                    # Import the data into the Claims board
+                    if 'data' in main_window.controllers and engine is not None:
+                        logger.info("Importing data into Claims board...")
+                        data_controller = main_window.controllers['data']
+                        
+                        # Explicitly validate the database connection
+                        if not hasattr(data_controller, 'engine') or data_controller.engine is None:
+                            logger.error("Data controller has no valid database engine")
+                            QMessageBox.critical(
+                                main_window,
+                                "Database Error",
+                                "Database engine not initialized properly. Cannot import data."
+                            )
+                        else:
+                            # Try to import the data
+                            # Inject headers as the first row of data_items to match existing processing
+                            data_with_headers = [headers] + data_items
+                            success = data_controller.import_excel_data_for_board("Claims", data_with_headers)
+                            if success:
+                                logger.info("Successfully imported Claims data")
+                                
+                                # Refresh the Claims board in the UI
+                                board_id = main_window.controllers['board'].get_board_id("Claims")
+                                if board_id:
+                                    main_window._on_select_board(board_id)
+                                    logger.info("Claims board refreshed in UI")
+                                    
+                                    # Show success message
+                                    QMessageBox.information(
+                                        main_window,
+                                        "Import Successful",
+                                        f"Successfully imported {len(data_items)-1} Claims records from Excel file."
+                                    )
+                            else:
+                                logger.error("Failed to import Claims data")
+                                QMessageBox.critical(
+                                    main_window,
+                                    "Import Error",
+                                    "Failed to import Claims data. Check the logs for details."
+                                )
+                    else:
+                        logger.error("Data controller not found in main window controllers")
+                        QMessageBox.critical(
+                            main_window,
+                            "Controller Error",
+                            "Data controller not found in application. Cannot import data."
+                        )
+                except Exception as e:
+                    logger.error(f"Error processing Excel file content: {str(e)}")
+                    QMessageBox.critical(
+                        main_window,
+                        "Excel Processing Error",
+                        f"Error processing Excel file content:\n\n{str(e)}"
+                    )
+                
+        except Exception as e:
+            logger.error(f"Error processing Claims Excel file: {str(e)}")
+            QMessageBox.critical(
+                main_window,
+                "Excel Import Error",
+                f"Error processing Claims Excel file:\n\n{str(e)}"
+            )
 
         # Initialize weather feeds
         try:
@@ -272,6 +436,26 @@ def main():
 
         # Create sample calendar events
         create_sample_calendar_events(main_window)
+
+        # Add import data action to main window
+        if hasattr(main_window, 'file_menu'):
+            import_action = QAction("Import Board Data...", main_window)
+            import_action.triggered.connect(lambda: import_board_data(main_window))
+            main_window.file_menu.addAction(import_action)
+        elif hasattr(main_window, 'menuBar'):
+            # If there's a menu bar but no file_menu yet
+            file_menu = main_window.menuBar().addMenu("&File")
+            import_action = QAction("Import Board Data...", main_window)
+            import_action.triggered.connect(lambda: import_board_data(main_window))
+            file_menu.addAction(import_action)
+            main_window.file_menu = file_menu
+        else:
+            # Create a toolbar button instead
+            import_action = QAction("Import Data", main_window)
+            import_action.triggered.connect(lambda: import_board_data(main_window))
+            toolbar = QToolBar("Main Toolbar", main_window)
+            toolbar.addAction(import_action)
+            main_window.addToolBar(toolbar)
 
         # Run the application
         sys.exit(app.exec())

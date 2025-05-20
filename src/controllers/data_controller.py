@@ -10,11 +10,16 @@ import json
 import requests
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
-from models.database import Claim, Client, PublicAdjuster, Employee, Note, BoardData, WeatherFeed, Board, BoardView, init_db
+from sqlalchemy.orm import Session
+from sqlalchemy import select, func, text, create_engine
+from sqlalchemy.exc import SQLAlchemyError
+from src.models.database import (
+    Claim, Client, PublicAdjuster, Employee, Note,
+    BoardData, WeatherFeed, Board, BoardView, init_db
+)
 import pandas as pd
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
-from sqlalchemy.orm import Session
 
 # Get logger
 logger = logging.getLogger("monday_uploader.data_controller")
@@ -24,26 +29,61 @@ class DataController:
     Controller for managing Monday.com board items.
     """
     
-    def __init__(self, db_path: str = None, parent=None, *args, **kwargs):
-        self.engine = init_db(db_path) if db_path else None
+    def __init__(self, engine=None, db_path=None, parent=None, *args, **kwargs):
+        """Initialize the data controller with either an engine or db_path."""
+        from sqlalchemy import create_engine
+        
+        # Ensure we have a valid engine
+        if engine is None:
+            if db_path is None:
+                db_path = 'monday_sync.db'
+            logger.info(f"Creating engine for database: {db_path}")
+            self.engine = create_engine(f'sqlite:///{db_path}')
+        elif isinstance(engine, str):
+            # If engine is a string (path), create engine from it
+            logger.info(f"Creating engine from string path: {engine}")
+            try:
+                # Try to interpret as a SQLAlchemy connection string first
+                if engine.startswith('sqlite:///'):
+                    self.engine = create_engine(engine)
+                else:
+                    # Otherwise, treat as a file path and create a SQLite connection string
+                    self.engine = create_engine(f'sqlite:///{engine}')
+                logger.info(f"Successfully created engine from string: {engine}")
+            except Exception as e:
+                logger.error(f"Error creating engine from string: {str(e)}")
+                # Fallback to default database
+                logger.info("Falling back to default database")
+                self.engine = create_engine('sqlite:///monday_sync.db')
+        else:
+            # Use provided engine
+            self.engine = engine
+            logger.info(f"Using provided engine directly")
+            
         self._mock_items = {}  # Cache for mock items
         self.parent = parent
         
         # Define board mapping
         self.board_map = {
             "Claims": "8903072880",
-            "Clients": "8903072881",
-            "Public Adjusters": "8903072882",
-            "Employees": "8903072883",
-            "Notes": "8903072884",
-            "Weather Reports": "8903072885",
-            "Tasks": "8903072886",
-            "Leads": "8903072887",
-            "Documents": "8903072888",
-            "Damage Estimates": "8903072889"
+            "Clients": "8768750185",
+            "Public Adjusters": "9000027904",
+            "Employees": "9000122678",
+            "Notes": "8968042746",
+            "Documents": "8769212922",
+            "Damage Estimates": "8769684040",
+            "Communications": "8769967973",
+            "Leads": "8778422410",
+            "Tasks": "8792210214",
+            "Insurance Companies": "8792259332",
+            "Contacts": "8792441338",
+            "Marketing Activities": "8792459115",
+            "Insurance Representatives": "8876787198",
+            "Police Report": "8884671005",
+            "Weather Reports": "9123456789"
         }
         
-        logger.info("Data controller initialized")
+        logger.info("Data controller initialized with engine")
     
     def get_board_name(self, board_id: str) -> Optional[str]:
         """
@@ -75,75 +115,65 @@ class DataController:
             board_name = self.get_board_name(board_id)
             logger.info(f"Loading items for board: {board_name} (ID: {board_id})")
             
-            # First check if we have generic board data
-            board_data = self.load_board_data_from_database(board_id)
-            if board_data:
-                return board_data
-                
+            # First try to load from generic board data
+            try:
+                logger.info(f"Attempting to load from generic board_data table")
+                board_data = self.load_board_data_from_database(board_id)
+                if board_data and len(board_data) > 0:
+                    logger.info(f"Successfully loaded {len(board_data)} items from board_data table")
+                    return board_data
+                else:
+                    logger.info(f"No data found in board_data table, trying specialized models")
+            except Exception as e:
+                logger.warning(f"Error loading from board_data table: {str(e)}")
+                # Continue to try specialized models
+                    
             # For backward compatibility, check specialized models
             # Handle Claims board
             if board_name == "Claims":
                 try:
                     # Check if we have data in the database
                     claims = self.load_claims_from_database(board_id)
-                    if claims:
-                        logger.info(f"Found {len(claims)} claims in database")
+                    if claims and len(claims) > 0:
+                        logger.info(f"Found {len(claims)} claims in specialized model table")
                         return claims
                 except Exception as e:
-                    logger.error(f"Error loading claims: {str(e)}")
-                    return []
+                    logger.error(f"Error loading claims from specialized model: {str(e)}")
             
             # Handle Clients board
             elif board_name == "Clients":
-                # Check if we have data in the database
-                clients = self.load_clients_from_database(board_id)
-                if clients:
-                    # If clients exist in database, load them
-                    return clients
+                try:
+                    # Check if we have data in the database
+                    clients = self.load_clients_from_database(board_id)
+                    if clients and len(clients) > 0:
+                        # If clients exist in database, load them
+                        logger.info(f"Found {len(clients)} clients in specialized model table")
+                        return clients
+                except Exception as e:
+                    logger.error(f"Error loading clients from specialized model: {str(e)}")
             
             # Handle Public Adjusters board
             elif board_name == "Public Adjusters":
-                # Check if we have data in the database
-                adjusters = self.load_public_adjusters_from_database(board_id)
-                if adjusters:
-                    # If public adjusters exist in database, load them
-                    return adjusters
+                try:
+                    # Check if we have data in the database
+                    adjusters = self.load_public_adjusters_from_database(board_id)
+                    if adjusters and len(adjusters) > 0:
+                        # If public adjusters exist in database, load them
+                        logger.info(f"Found {len(adjusters)} adjusters in specialized model table")
+                        return adjusters
+                except Exception as e:
+                    logger.error(f"Error loading public adjusters from specialized model: {str(e)}")
             
-            # Handle Employees board
-            elif board_name == "Employees":
-                # Check if we have data in the database
-                employees = self.load_employees_from_database(board_id)
-                if employees:
-                    # If employees exist in database, load them
-                    return employees
-            
-            # Handle Notes board
-            elif board_name == "Notes":
-                # Check if we have data in the database
-                notes = self.load_notes_from_database(board_id)
-                if notes:
-                    # If notes exist in database, load them
-                    return notes
-            
-            # Handle Weather Feeds board
-            elif board_name == "Weather Reports":
-                # Check if we have data in the database
-                weather_feeds = self.load_weather_feeds_from_database()
-                if weather_feeds:
-                    # If weather feeds exist in database, load them
-                    return weather_feeds
-                else:
-                    # If no data in database, fetch it
-                    return self.fetch_and_store_weather_feeds()
-            
-            # For other boards or if no data in database, use mock data
+            # If no data was found in the database, generate mock data
+            logger.info(f"No data found in database for board {board_name}, generating mock data")
             if board_id not in self._mock_items:
                 self._mock_items[board_id] = self._generate_mock_items(board_id)
                 
-            logger.info(f"Loaded {len(self._mock_items[board_id])} items for board {board_id}")
+            logger.info(f"Loaded {len(self._mock_items[board_id])} mock items for board {board_id}")
             return self._mock_items[board_id]
         except Exception as e:
             logger.error(f"Error loading board items: {str(e)}")
+            logger.exception("Detailed traceback:")
             return []
     
     def fetch_and_store_weather_feeds(self) -> List[Dict[str, Any]]:
@@ -746,75 +776,105 @@ class DataController:
                 logger.error(f"{board_name} board not found")
                 return False
             
-            # Get column headers from the first row
+            logger.info(f"Importing data for board {board_name} (ID: {board_id})")
+            
+            # The headers are already in the first row of data_items since we used header=4 when reading the Excel file
+            # We don't need to treat data_items[0] as headers again
             headers = []
             if data_items and len(data_items) > 0:
-                headers = [str(h) if h is not None and not pd.isna(h) else f"Column_{i}" for i, h in enumerate(data_items[0])]
+                # These are the column headers that were already extracted from the Excel file
+                # We'll read them directly from the dataframe columns instead of using data_items[0]
+                # This will be passed in from main.py
+                headers = [str(h) if h is not None and not pd.isna(h) else f"Column_{i}" 
+                          for i, h in enumerate(data_items[0])]
+                logger.info(f"Found headers: {headers}")
             
             # Clear existing data for this board from the database
             with Session(self.engine) as session:
-                session.query(BoardData).filter_by(board_id=board_id).delete()
+                try:
+                    count = session.query(BoardData).filter_by(board_id=board_id).delete()
+                    session.commit()
+                    logger.info(f"Cleared {count} existing records for board {board_name}")
+                except Exception as e:
+                    logger.error(f"Error clearing existing data: {str(e)}")
+                    session.rollback()
+                    raise
             
             # Convert Excel data to items and store in database
             items = []
             for i, row in enumerate(data_items):
-                if i == 0:  # Skip header row
-                    continue
+                # Don't skip the first row since all rows are now data rows
+                # The headers were already handled when reading the Excel file
                 
                 # Skip empty rows
-                if not row or len(row) < 1:
+                if not row or all(pd.isna(cell) or cell is None or str(cell).strip() == "" for cell in row):
                     continue
                 
-                # Extract primary display field (first column)
-                # Handle NaN values, which are not allowed
-                if pd.isna(row[0]) or row[0] is None or str(row[0]).strip() == "":
-                    name = f"{board_name} Item {i}"
-                else:
-                    name = str(row[0])
-                
-                # Create a dictionary for all fields
-                row_data = {}
-                for j, value in enumerate(row):
-                    if j < len(headers):
-                        header = headers[j]
-                        row_data[header] = str(value) if value is not None and not pd.isna(value) else ""
-                
-                # Create database record
-                board_data = BoardData(
-                    board_id=board_id,
-                    board_name=board_name,
-                    name=name,
-                    data=json.dumps(row_data)
-                )
-                session.add(board_data)
-                
-                # Create item for UI display
-                item = {
-                    "id": f"{board_id}_{i}",
-                    "name": name,
-                    "created_at": datetime.now().strftime("%Y-%m-%d")
-                }
-                
-                # Add all fields from the Excel file to the item
-                for key, value in row_data.items():
-                    item[key] = value
-                
-                items.append(item)
-            
-            # Commit changes to database
-            session.commit()
+                try:
+                    # Extract primary display field (first column)
+                    if pd.isna(row[0]) or row[0] is None or str(row[0]).strip() == "":
+                        name = f"{board_name} Item {i}"
+                    else:
+                        name = str(row[0])
+                    
+                    # Create a dictionary for all fields
+                    row_data = {}
+                    for j, value in enumerate(row):
+                        if j < len(headers):
+                            header = headers[j]
+                            # Convert NaN or None to empty string
+                            if pd.isna(value) or value is None:
+                                value = ""
+                            # Convert datetime objects to string
+                            elif isinstance(value, pd.Timestamp):
+                                value = value.strftime("%Y-%m-%d %H:%M:%S")
+                            row_data[header] = str(value)
+                    
+                    logger.info(f"Processing row {i}: {name}")
+                    
+                    # Create database record
+                    board_data = BoardData(
+                        board_id=board_id,
+                        board_name=board_name,
+                        name=name,
+                        data=json.dumps(row_data)
+                    )
+                    
+                    with Session(self.engine) as session:
+                        try:
+                            session.add(board_data)
+                            session.commit()
+                            logger.info(f"Saved record to database: {name}")
+                        except Exception as e:
+                            logger.error(f"Error saving record to database: {str(e)}")
+                            session.rollback()
+                            raise
+                    
+                    # Create item for UI display
+                    item = {
+                        "id": f"{board_id}_{i}",
+                        "name": name,
+                        "created_at": datetime.now().strftime("%Y-%m-%d")
+                    }
+                    
+                    # Add all fields from the Excel file to the item
+                    for key, value in row_data.items():
+                        item[key] = value
+                    
+                    items.append(item)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing row {i}: {str(e)}")
+                    continue
             
             # Replace mock items with imported data
             self._mock_items[board_id] = items
             
-            logger.info(f"Imported {len(items)} items for {board_name} board")
+            logger.info(f"Successfully imported {len(items)} items for {board_name} board")
             return True
             
         except Exception as e:
             logger.error(f"Error importing {board_name} Excel data: {str(e)}")
-            # Rollback in case of error
-            with Session(self.engine) as session:
-                session.rollback()
             return False
     
     def load_board_data_from_database(self, board_id: str) -> List[Dict[str, Any]]:
@@ -830,31 +890,49 @@ class DataController:
         try:
             # Get the board name
             board_name = self.get_board_name(board_id) or "Unknown"
+            logger.info(f"Attempting to load data from database for board {board_name} (ID: {board_id})")
+            
+            # Verify engine is valid
+            if not hasattr(self, 'engine') or self.engine is None:
+                logger.error("Database engine is not initialized")
+                return []
+                
+            logger.info(f"Using engine: {type(self.engine)}")
             
             # Query board data from database
-            with Session(self.engine) as session:
-                board_data_list = session.query(BoardData).filter_by(board_id=board_id).all()
-            
-            # Convert to items format
             items = []
-            for i, bd in enumerate(board_data_list):
-                # Create base item
-                item = {
-                    "id": f"{board_id}_{i}",
-                    "name": bd.name,
-                    "created_at": bd.created_at.strftime("%Y-%m-%d")
-                }
-                
-                # Add all fields from the JSON data
-                if bd.data:
-                    try:
-                        data = json.loads(bd.data)
-                        for key, value in data.items():
-                            item[key] = value
-                    except:
-                        pass
-                
-                items.append(item)
+            with Session(self.engine) as session:
+                logger.info(f"Querying BoardData for board_id: {board_id}")
+                board_data_list = session.query(BoardData).filter_by(board_id=board_id).all()
+                logger.info(f"Found {len(board_data_list)} records in board_data table")
+            
+                # Convert to items format
+                for i, bd in enumerate(board_data_list):
+                    # Create base item
+                    item = {
+                        "id": f"{board_id}_{i}",
+                        "name": bd.name,
+                        "created_at": bd.created_at.strftime("%Y-%m-%d")
+                    }
+                    
+                    # Add all fields from the JSON data
+                    if bd.data:
+                        try:
+                            data = json.loads(bd.data)
+                            for key, value in data.items():
+                                item[key] = value
+                        except Exception as e:
+                            logger.error(f"Error parsing JSON data for item {bd.id}: {str(e)}")
+                    
+                    items.append(item)
+                    
+                    # Log the first item for debugging
+                    if i == 0:
+                        logger.info(f"Sample item: {item['name']}")
+                        fields_to_log = ['Claim Number', 'Loss Type', 'Claim Status', 'Insurance Company']
+                        for field in fields_to_log:
+                            if field in item:
+                                logger.info(f"  {field}: {item[field]}")
             
             # Cache items
             self._mock_items[board_id] = items
@@ -863,6 +941,7 @@ class DataController:
             return items
         except Exception as e:
             logger.error(f"Error loading data from database for board {board_id}: {str(e)}")
+            logger.exception("Detailed traceback:")
             return []
     
     def safe_float(self, val):

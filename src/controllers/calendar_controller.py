@@ -7,10 +7,13 @@ import json
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 from sqlalchemy import and_, or_
-from models.database import CalendarEvent, EventReminder
+from sqlalchemy.orm import Session
+from sqlalchemy import select, func
+from sqlalchemy.exc import SQLAlchemyError
+from src.models.database import CalendarEvent, EventReminder
 
 # Get logger
-logger = logging.getLogger("monday_uploader.calendar_controller")
+logger = logging.getLogger("monday_uploader.calendar")
 
 class CalendarController:
     """
