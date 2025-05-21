@@ -24,6 +24,7 @@ from ui.panels.map_panel import MapPanel
 from ui.panels.news_panel import NewsPanel
 from ui.dialogs.settings_dialog import SettingsDialog
 from ui.dialogs.template_dialog import TemplateDialog
+from ui.panels.analytics_panel import AnalyticsPanel
 
 from controllers.board_controller import BoardController
 from controllers.data_controller import DataController
@@ -32,6 +33,7 @@ from controllers.calendar_controller import CalendarController
 from controllers.feedback_controller import FeedbackController
 from controllers.settlement_controller import SettlementController
 from ui.dialogs.settlement_calculator_dialog import SettlementCalculatorDialog
+from controllers.analytics_controller import AnalyticsController
 
 from api.monday_api import MondayAPI
 from utils.error_handling import handle_error, MondayError, ErrorCodes
@@ -125,6 +127,9 @@ class MainWindow(QMainWindow):
         # Initialize controllers
         self._init_controllers()
         
+        # Initialize analytics controller
+        self.analytics_controller = AnalyticsController(self.session)
+        
         # Setup UI
         self._setup_ui()
         
@@ -175,6 +180,9 @@ class MainWindow(QMainWindow):
             
             # Create settlement controller if not exists
             self.controllers['settlement'] = SettlementController(self.engine)
+            
+            # Create analytics controller
+            self.analytics_controller = AnalyticsController(self.session)
             
             logger.info("Controllers initialized")
         except Exception as e:
@@ -230,6 +238,18 @@ class MainWindow(QMainWindow):
         
         # Setup settlement calculator
         self._setup_settlement_calculator()
+        
+        # Add analytics panel
+        self.analytics_panel = AnalyticsPanel(self)
+        self.analytics_panel.set_analytics_controller(self.analytics_controller)
+        
+        # Add analytics tab
+        self.tab_widget.addTab(self.analytics_panel, "Analytics")
+        
+        # Add analytics action to View menu
+        analytics_action = QAction("Analytics Dashboard", self)
+        analytics_action.triggered.connect(lambda: self.tab_widget.setCurrentWidget(self.analytics_panel))
+        self.view_menu.addAction(analytics_action)
     
     def _create_action(self, text: str, tooltip: str, slot=None, shortcut: Optional[str] = None) -> QAction:
         """
@@ -278,6 +298,7 @@ class MainWindow(QMainWindow):
         view_menu = menu_bar.addMenu("&View")
         view_menu.addAction(self._create_action("&Dock Manager", "Show/hide dock manager", self._toggle_dock_manager))
         view_menu.addAction(self._create_action("&Items Panel", "Show/hide items panel", self._toggle_items_panel))
+        view_menu.addAction(analytics_action)
         
         # Tools menu
         tools_menu = menu_bar.addMenu("&Tools")
