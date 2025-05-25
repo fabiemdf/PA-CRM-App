@@ -47,3 +47,4 @@ logs/
 
 # Project specific
 *.csv 
+node_modules

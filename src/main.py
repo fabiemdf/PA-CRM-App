@@ -20,21 +20,19 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSettings, QSize, QPoint
 from PySide6.QtGui import QIcon, QAction, QKeySequence, QCursor
 
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
 try:
     # Application modules
-    from src.ui.main_window import MainWindow
-    from src.models.database import init_db, CalendarEvent
+    from src.models.database import init_db, Session, CalendarEvent, Claim, Client, PublicAdjuster
     from utils.logger import setup_logger
     from utils.error_handling import MondayError, handle_error
     from controllers.feedback_controller import FeedbackController
     from controllers.data_controller import DataController
+    from ui.dock_manager import DockManager
+    from src.config.board_config import DEFAULT_BOARDS, BOARD_MODEL_MAP
 except ImportError as e:
     print(f"Error importing application modules: {str(e)}")
-    QMessageBox.critical(
-        None, 
-        "Import Error", 
-        f"Failed to import required modules: {str(e)}\n\nPlease ensure all dependencies are installed."
-    )
     sys.exit(1)
 
 # Configure logging
@@ -51,25 +49,9 @@ APP_VERSION = "1.0.0"
 CONFIG_FILE = "config.json"
 SETTINGS_FILE = "settings.json"
 
-# Default boards for offline mode
-DEFAULT_BOARDS = {
-    "Claims": "8903072880",
-    "Clients": "8768750185",
-    "Public Adjusters": "9000027904",
-    "Employees": "9000122678",
-    "Notes": "8968042746",
-    "Documents": "8769212922",
-    "Damage Estimates": "8769684040",
-    "Communications": "8769967973",
-    "Leads": "8778422410",
-    "Tasks": "8792210214",
-    "Insurance Companies": "8792259332",
-    "Contacts": "8792441338",
-    "Marketing Activities": "8792459115",
-    "Insurance Representatives": "8876787198",
-    "Police Report": "8884671005",
-    "Weather Reports": "9123456789"
-}
+# Use board configuration from config file
+DEFAULT_BOARDS = DEFAULT_BOARDS
+BOARD_MODEL_MAP = BOARD_MODEL_MAP
 
 def create_sample_calendar_events(main_window):
     """Create sample calendar events for demonstration."""
@@ -262,6 +244,9 @@ def import_board_data(main_window):
 def main():
     """Application entry point"""
     try:
+        # Import MainWindow here to avoid circular imports
+        from src.ui.main_window import MainWindow
+        
         # Create Qt application
         app = QApplication(sys.argv)
         app.setApplicationName(APP_NAME)
@@ -275,11 +260,13 @@ def main():
             logger.warning("QDarkStyle not found, using default style")
         
         # Initialize database
-        db_path = 'monday_sync.db'
+        data_dir = 'data'
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+        db_path = os.path.join(data_dir, 'monday_sync.db')
         engine = None
         try:
-            from sqlalchemy import create_engine
-            engine = create_engine(f'sqlite:///{db_path}')
+            engine = init_db(db_path)
             logger.info(f"Database engine created for: {db_path}")
         except Exception as e:
             logger.error(f"Database engine creation failed: {str(e)}")
@@ -288,11 +275,10 @@ def main():
                 "Database Error", 
                 f"Failed to create database engine: {str(e)}"
             )
-        
-        # Path to the Excel files
-        excel_files = {
-            "Claims": r"C:\Users\mfabi\OneDrive\Desktop\app\PA_Claims_FPA_Claims_1747602640.xlsx"
-        }
+            return 1
+
+        # Create session
+        session = Session(bind=engine)
 
         # Initialize controllers
         feedback_controller = FeedbackController(engine)
@@ -320,97 +306,6 @@ def main():
         except Exception as e:
             logger.error(f"Error selecting initial board: {str(e)}")
             # Non-critical error, we can continue
-
-        # Process Claims Excel file
-        claims_path = excel_files["Claims"]
-        try:
-            # Check if file exists
-            if not os.path.exists(claims_path):
-                logger.error(f"Claims Excel file not found at: {claims_path}")
-                QMessageBox.warning(
-                    main_window,
-                    "File Not Found",
-                    f"Claims Excel file not found at:\n{claims_path}"
-                )
-            else:
-                logger.info(f"Found Claims Excel file at: {claims_path}")
-                
-                try:
-                    # Read the Excel file - Note: Headers start at row 5
-                    logger.info("Reading Claims Excel file...")
-                    df = pd.read_excel(claims_path, header=4)  # header=4 means row 5 is the header
-                    logger.info(f"Excel file read successfully. Found {len(df.columns)} columns and {len(df)} rows")
-                    logger.info(f"Column headers: {', '.join(df.columns.tolist())}")
-                    
-                    # Get the column headers
-                    headers = df.columns.tolist()
-                    
-                    # Extract data items (all rows, not including headers since they're already extracted)
-                    data_items = df.values.tolist()
-                    logger.info(f"Extracted {len(data_items)} data rows")
-                    
-                    # Import the data into the Claims board
-                    if 'data' in main_window.controllers and engine is not None:
-                        logger.info("Importing data into Claims board...")
-                        data_controller = main_window.controllers['data']
-                        
-                        # Explicitly validate the database connection
-                        if not hasattr(data_controller, 'engine') or data_controller.engine is None:
-                            logger.error("Data controller has no valid database engine")
-                            QMessageBox.critical(
-                                main_window,
-                                "Database Error",
-                                "Database engine not initialized properly. Cannot import data."
-                            )
-                        else:
-                            # Try to import the data
-                            # Inject headers as the first row of data_items to match existing processing
-                            data_with_headers = [headers] + data_items
-                            success = data_controller.import_excel_data_for_board("Claims", data_with_headers)
-                            if success:
-                                logger.info("Successfully imported Claims data")
-                                
-                                # Refresh the Claims board in the UI
-                                board_id = main_window.controllers['board'].get_board_id("Claims")
-                                if board_id:
-                                    main_window._on_select_board(board_id)
-                                    logger.info("Claims board refreshed in UI")
-                                    
-                                    # Show success message
-                                    QMessageBox.information(
-                                        main_window,
-                                        "Import Successful",
-                                        f"Successfully imported {len(data_items)-1} Claims records from Excel file."
-                                    )
-                            else:
-                                logger.error("Failed to import Claims data")
-                                QMessageBox.critical(
-                                    main_window,
-                                    "Import Error",
-                                    "Failed to import Claims data. Check the logs for details."
-                                )
-                    else:
-                        logger.error("Data controller not found in main window controllers")
-                        QMessageBox.critical(
-                            main_window,
-                            "Controller Error",
-                            "Data controller not found in application. Cannot import data."
-                        )
-                except Exception as e:
-                    logger.error(f"Error processing Excel file content: {str(e)}")
-                    QMessageBox.critical(
-                        main_window,
-                        "Excel Processing Error",
-                        f"Error processing Excel file content:\n\n{str(e)}"
-                    )
-                
-        except Exception as e:
-            logger.error(f"Error processing Claims Excel file: {str(e)}")
-            QMessageBox.critical(
-                main_window,
-                "Excel Import Error",
-                f"Error processing Claims Excel file:\n\n{str(e)}"
-            )
 
         # Initialize weather feeds
         try:

@@ -9,10 +9,11 @@ import logging
 from typing import Dict, List, Any, Optional, Set
 
 from PySide6.QtCore import Qt, QSize, QSettings, QPoint, QTimer
-from PySide6.QtGui import QIcon, QAction, QKeySequence, QCloseEvent
+from PySide6.QtGui import QIcon, QAction, QKeySequence, QCloseEvent, QCursor
 from PySide6.QtWidgets import (
     QMainWindow, QDockWidget, QMenu, QToolBar, QMessageBox,
-    QStatusBar, QTabWidget, QFileDialog, QWidget, QVBoxLayout, QMenuBar, QDialog
+    QStatusBar, QTabWidget, QFileDialog, QWidget, QVBoxLayout, QMenuBar, QDialog,
+    QPushButton, QLabel, QHBoxLayout, QStyle, QInputDialog
 )
 
 # Import application-specific modules
@@ -82,6 +83,15 @@ except ImportError:
             def get_applied_migrations(self):
                 return []
 
+# Import new dialogs
+from ui.dialogs.board_manager_dialog import BoardManagerDialog
+from ui.dialogs.column_manager_dialog import ColumnManagerDialog
+from ui.dialogs.item_manager_dialog import ItemManagerDialog
+
+# Import database models and utilities
+from src.models.database import Session, Base
+from src.utils.logger import setup_logger
+
 # Get logger
 logger = logging.getLogger("monday_uploader.main_window")
 
@@ -90,7 +100,7 @@ class MainWindow(QMainWindow):
     Main application window with dockable panels.
     """
     
-    def __init__(self, engine, default_boards: Dict[str, str]):
+    def __init__(self, engine, default_boards=None):
         """
         Initialize the main window.
         
@@ -100,22 +110,15 @@ class MainWindow(QMainWindow):
         """
         super().__init__()
         
-        # Set window properties
-        self.setWindowTitle("Monday Uploader (PySide Edition)")
-        self.setMinimumSize(1200, 800)
+        # Initialize logger
+        self.logger = setup_logger()
         
-        # Initialize members
+        # Store engine and create session
         self.engine = engine
-        self.default_boards = default_boards
-        self.session = None
-        self.dock_manager = DockManager(self)
-        self.panels = {}
-        self.controllers = {}
+        self.session = Session(bind=engine)
         
-        # Setup session
-        from sqlalchemy.orm import sessionmaker
-        Session = sessionmaker(bind=self.engine)
-        self.session = Session()
+        # Store default boards
+        self.default_boards = default_boards or {}
         
         # Load settings
         self.settings = load_settings()
@@ -125,10 +128,29 @@ class MainWindow(QMainWindow):
         self.monday_api = MondayAPI(self.api_key)
         
         # Initialize controllers
+        self.controllers = {}
         self._init_controllers()
         
-        # Initialize analytics controller
-        self.analytics_controller = AnalyticsController(self.session)
+        # Initialize panels dictionary
+        self.panels = {}
+        
+        # Initialize dock manager
+        self.dock_manager = DockManager(self)
+        
+        # Apply any pending migrations
+        try:
+            # Import here to avoid circular imports
+            from src.utils.database_migration import apply_pending_migrations, create_sample_data
+            apply_pending_migrations(self.engine)
+            # Create sample data if needed
+            create_sample_data(self.session)
+        except Exception as e:
+            self.logger.error(f"Error applying migrations: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Database Error",
+                f"Error applying database migrations: {str(e)}"
+            )
         
         # Setup UI
         self._setup_ui()
@@ -145,71 +167,65 @@ class MainWindow(QMainWindow):
             sync_interval = self.settings.get('sync_interval', 300) * 1000  # convert to milliseconds
             self._update_timer.start(sync_interval)
         
+        # Initialize weather feeds
+        try:
+            if 'data' in self.controllers:
+                weather_board_id = self.controllers['board'].get_board_id("Weather Reports")
+                if weather_board_id:
+                    # Fetch and store weather feeds
+                    weather_feeds = self.controllers['data'].fetch_and_store_weather_feeds()
+                    if not weather_feeds:
+                        logger.warning("No weather feeds were fetched")
+        except Exception as e:
+            logger.error(f"Error fetching weather feeds: {str(e)}")
+        
         logger.info("Main window initialized")
         
     def _init_controllers(self):
         """Initialize controllers."""
         try:
-            # Create controllers
+            # Initialize board controller
             self.controllers['board'] = BoardController(
-                self.monday_api, 
-                self.session,
-                self.default_boards
+                session=Session(bind=self.engine),
+                default_boards=self.default_boards
             )
             
+            # Initialize data controller
             self.controllers['data'] = DataController(
-                'monday_sync.db'
+                engine=self.engine,
+                board_controller=self.controllers['board']
             )
             
-            self.controllers['sync'] = SyncController(
-                self.monday_api, 
-                self.session
-            )
-            
-            self.controllers['calendar'] = CalendarController(
-                self.session
-            )
-            
-            self.controllers['feedback'] = FeedbackController(
-                self.session
-            )
-            
-            # Set sync controller to offline mode by default to avoid API calls
-            if 'sync' in self.controllers:
-                self.controllers['sync'].set_offline_mode(True)
-            
-            # Create settlement controller if not exists
-            self.controllers['settlement'] = SettlementController(self.engine)
-            
-            # Create analytics controller
-            self.analytics_controller = AnalyticsController(self.session)
+            # Initialize other controllers
+            self.controllers['calendar'] = CalendarController(self.engine)
+            self.controllers['feedback'] = FeedbackController(session=Session(bind=self.engine))
+            self.controllers['sync'] = SyncController(self.engine, Session(bind=self.engine))
+            self.controllers['analytics'] = AnalyticsController(self.engine)
             
             logger.info("Controllers initialized")
         except Exception as e:
-            logger.error(f"Failed to initialize controllers: {str(e)}")
-            handle_error(
-                exception=e,
-                parent=self,
-                context={"module": "MainWindow", "method": "_init_controllers"},
-                title="Controller Initialization Error"
-            )
-    
+            logger.error(f"Error initializing controllers: {str(e)}")
+            handle_error(e)
+            
     def _setup_ui(self):
         """Setup the user interface."""
-        # Create central widget - This will be the items panel
+        # Create central widget - This will be the tab widget
         self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
-        self.tab_widget.setMovable(True)
-        self.tab_widget.setDocumentMode(True)
-        self.tab_widget.tabCloseRequested.connect(self._on_tab_close_requested)
+        
+        # Create panels
+        self.panels['items'] = ItemsPanel(self.controllers['board'], self.controllers['data'])
+        self.panels['analytics'] = AnalyticsPanel()
+        self.panels['analytics'].set_analytics_controller(self.controllers['analytics'])
+        
+        # Add panels to tab widget
+        self.tab_widget.addTab(self.panels['items'], "Items")
+        self.tab_widget.addTab(self.panels['analytics'], "Analytics")
+        
+        # Set tab widget as central widget
+        self.setCentralWidget(self.tab_widget)
         
         # Create menu bar
         self._create_menu_bar()
-        
-        # Create status bar
-        self.status_bar = QStatusBar(self)
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Ready")
         
         # Create tool bar
         self._create_tool_bar()
@@ -217,39 +233,16 @@ class MainWindow(QMainWindow):
         # Create dock widgets
         self._create_dock_widgets()
         
-        # Create items panel and set as central widget
-        try:
-            # Create items panel
-            items_panel = ItemsPanel(self.controllers['board'], self.controllers['data'], self)
-            
-            # Set as central widget
-            self.setCentralWidget(items_panel)
-            
-            # Store panel reference
-            self.panels["items"] = items_panel
-            
-        except Exception as e:
-            logger.error(f"Failed to create items panel: {str(e)}")
-            handle_error(
-                exception=e,
-                parent=self,
-                context={"module": "MainWindow", "method": "_setup_ui"}
-            )
+        # Create status bar
+        self.statusBar = QStatusBar()
+        self.setStatusBar(self.statusBar)
+        self.statusBar.showMessage("Ready")
         
         # Setup settlement calculator
         self._setup_settlement_calculator()
         
-        # Add analytics panel
-        self.analytics_panel = AnalyticsPanel(self)
-        self.analytics_panel.set_analytics_controller(self.analytics_controller)
-        
-        # Add analytics tab
-        self.tab_widget.addTab(self.analytics_panel, "Analytics")
-        
-        # Add analytics action to View menu
-        analytics_action = QAction("Analytics Dashboard", self)
-        analytics_action.triggered.connect(lambda: self.tab_widget.setCurrentWidget(self.analytics_panel))
-        self.view_menu.addAction(analytics_action)
+        # Update UI based on enabled features
+        self._update_ui_for_features()
     
     def _create_action(self, text: str, tooltip: str, slot=None, shortcut: Optional[str] = None) -> QAction:
         """
@@ -273,81 +266,185 @@ class MainWindow(QMainWindow):
         return action
     
     def _create_menu_bar(self):
-        """Create the application menu bar."""
+        """Create the menu bar."""
         menu_bar = self.menuBar()
         
         # File menu
-        file_menu = menu_bar.addMenu("&File")
-        file_menu.addAction(self._create_action("&New", "Create new project", self._on_new))
-        file_menu.addAction(self._create_action("&Open...", "Open existing project", self._on_open))
-        file_menu.addAction(self._create_action("&Save", "Save current project", self._on_save))
-        file_menu.addAction(self._create_action("Save &As...", "Save project as...", self._on_save_as))
-        file_menu.addSeparator()
-        file_menu.addAction(self._create_action("E&xit", "Exit application", self.close))
+        self.file_menu = menu_bar.addMenu("&File")
+        
+        # New action
+        new_action = self._create_action(
+            "&New",
+            "Create a new board",
+            self._on_new,
+            "Ctrl+N"
+        )
+        self.file_menu.addAction(new_action)
+        
+        # Open action
+        open_action = self._create_action(
+            "&Open",
+            "Open an existing board",
+            self._on_open,
+            "Ctrl+O"
+        )
+        self.file_menu.addAction(open_action)
+        
+        self.file_menu.addSeparator()
+        
+        # Save action
+        save_action = self._create_action(
+            "&Save",
+            "Save the current board",
+            self._on_save,
+            "Ctrl+S"
+        )
+        self.file_menu.addAction(save_action)
+        
+        # Save As action
+        save_as_action = self._create_action(
+            "Save &As...",
+            "Save the current board with a new name",
+            self._on_save_as,
+            "Ctrl+Shift+S"
+        )
+        self.file_menu.addAction(save_as_action)
+        
+        self.file_menu.addSeparator()
+        
+        # Import action
+        import_action = self._create_action(
+            "&Import...",
+            "Import data from a file",
+            self._on_import
+        )
+        self.file_menu.addAction(import_action)
+        
+        # Export action
+        export_action = self._create_action(
+            "&Export...",
+            "Export data to a file",
+            self._on_export
+        )
+        self.file_menu.addAction(export_action)
+        
+        self.file_menu.addSeparator()
+        
+        # Exit action
+        exit_action = self._create_action(
+            "E&xit",
+            "Exit the application",
+            self.close,
+            "Alt+F4"
+        )
+        self.file_menu.addAction(exit_action)
         
         # Edit menu
         edit_menu = menu_bar.addMenu("&Edit")
-        edit_menu.addAction(self._create_action("&Undo", "Undo last action", self._on_undo))
-        edit_menu.addAction(self._create_action("&Redo", "Redo last action", self._on_redo))
+        
+        # Undo action
+        undo_action = self._create_action(
+            "&Undo",
+            "Undo the last action",
+            self._on_undo,
+            "Ctrl+Z"
+        )
+        edit_menu.addAction(undo_action)
+        
+        # Redo action
+        redo_action = self._create_action(
+            "&Redo",
+            "Redo the last undone action",
+            self._on_redo,
+            "Ctrl+Y"
+        )
+        edit_menu.addAction(redo_action)
+        
         edit_menu.addSeparator()
-        edit_menu.addAction(self._create_action("Cu&t", "Cut selection", self._on_cut))
-        edit_menu.addAction(self._create_action("&Copy", "Copy selection", self._on_copy))
-        edit_menu.addAction(self._create_action("&Paste", "Paste selection", self._on_paste))
+        
+        # Cut action
+        cut_action = self._create_action(
+            "Cu&t",
+            "Cut the selected item",
+            self._on_cut,
+            "Ctrl+X"
+        )
+        edit_menu.addAction(cut_action)
+        
+        # Copy action
+        copy_action = self._create_action(
+            "&Copy",
+            "Copy the selected item",
+            self._on_copy,
+            "Ctrl+C"
+        )
+        edit_menu.addAction(copy_action)
+        
+        # Paste action
+        paste_action = self._create_action(
+            "&Paste",
+            "Paste the copied item",
+            self._on_paste,
+            "Ctrl+V"
+        )
+        edit_menu.addAction(paste_action)
         
         # View menu
-        view_menu = menu_bar.addMenu("&View")
-        view_menu.addAction(self._create_action("&Dock Manager", "Show/hide dock manager", self._toggle_dock_manager))
-        view_menu.addAction(self._create_action("&Items Panel", "Show/hide items panel", self._toggle_items_panel))
-        view_menu.addAction(analytics_action)
+        self.view_menu = menu_bar.addMenu("&View")
+        
+        # Analytics action
+        self.analytics_action = self._create_action(
+            "&Analytics",
+            "Show analytics dashboard",
+            lambda: self._toggle_panel("analytics", True)
+        )
+        self.view_menu.addAction(self.analytics_action)
         
         # Tools menu
         tools_menu = menu_bar.addMenu("&Tools")
         
-        # Check if settlement calculator is enabled via feature flags
-        try:
-            # Try to import feature flags module
-            try:
-                from src.utils.feature_flags import feature_flags
-                has_feature_flags = True
-            except ImportError:
-                try:
-                    from utils.feature_flags import feature_flags 
-                    has_feature_flags = True
-                except ImportError:
-                    has_feature_flags = False
-            
-            if has_feature_flags and feature_flags.is_enabled("settlement_calculator_enabled"):
-                # Add settlement calculator entry
-                tools_menu.addAction(self._create_action("&Settlement Calculator", 
-                                                       "Open settlement calculator", 
-                                                       self._on_launch_settlement_calculator))
-        except Exception as e:
-            logger.warning(f"Could not check settlement calculator feature flag: {str(e)}")
+        # Settings action
+        settings_action = self._create_action(
+            "&Settings",
+            "Configure application settings",
+            self._on_settings
+        )
+        tools_menu.addAction(settings_action)
         
-        tools_menu.addAction(self._create_action("&Template Creator", "Create document templates", self._on_template_creator))
-        tools_menu.addSeparator()
+        # Template Creator action
+        template_action = self._create_action(
+            "&Template Creator",
+            "Create or edit templates",
+            self._on_template_creator
+        )
+        tools_menu.addAction(template_action)
         
-        # Add feature manager if feature flags are available
-        if has_feature_flags:
-            tools_menu.addAction(self._create_action("&Feature Manager", "Manage application features", self._on_launch_feature_manager))
-            
-        tools_menu.addAction(self._create_action("&Database Management", "Manage database migrations", self._on_database_manager))
-        
-        # Sync menu
-        sync_menu = menu_bar.addMenu("&Sync")
-        sync_menu.addAction(self._create_action("&Sync Now", "Sync with Monday.com", self._on_sync))
-        sync_menu.addAction(self._create_action("Sync &Settings...", "Configure sync settings", self._on_sync_settings))
+        # Settlement Calculator action
+        settlement_action = self._create_action(
+            "&Settlement Calculator",
+            "Calculate settlement amounts",
+            self._on_settlement_calculator
+        )
+        tools_menu.addAction(settlement_action)
         
         # Help menu
         help_menu = menu_bar.addMenu("&Help")
-        help_menu.addAction(self._create_action("&Documentation", "View documentation", self._on_documentation))
-        help_menu.addAction(self._create_action("&About", "About application", self._on_about))
-        help_menu.addSeparator()
-        help_menu.addAction(self._create_action("Send &Feedback", "Send feedback to developers", self._on_feedback))
-        help_menu.addAction(self._create_action("View &Feedback", "View and manage feedback", self._on_view_feedback))
         
-        # Store menu references
-        self.menu_tools = tools_menu
+        # Documentation action
+        docs_action = self._create_action(
+            "&Documentation",
+            "View application documentation",
+            self._on_documentation
+        )
+        help_menu.addAction(docs_action)
+        
+        # About action
+        about_action = self._create_action(
+            "&About",
+            "About the application",
+            self._on_about
+        )
+        help_menu.addAction(about_action)
     
     def _create_tool_bar(self):
         """Create the tool bar."""
@@ -393,7 +490,7 @@ class MainWindow(QMainWindow):
         """Create the boards dock widget."""
         try:
             # Create board panel
-            board_panel = BoardPanel(self.controllers['board'], self)
+            board_panel = BoardPanel(parent=self, board_controller=self.controllers['board'])
             
             # Create dock widget
             dock = QDockWidget("Boards", self)
@@ -588,7 +685,7 @@ class MainWindow(QMainWindow):
         )
         
         if file_path:
-            self.status_bar.showMessage(f"Importing {file_path}...")
+            self.statusBar.showMessage(f"Importing {file_path}...")
             # TODO: Implement import functionality
     
     def _on_export(self):
@@ -601,7 +698,7 @@ class MainWindow(QMainWindow):
         )
         
         if file_path:
-            self.status_bar.showMessage(f"Exporting to {file_path}...")
+            self.statusBar.showMessage(f"Exporting to {file_path}...")
             # TODO: Implement export functionality
     
     def _on_template_creator(self):
@@ -625,13 +722,13 @@ class MainWindow(QMainWindow):
             if hasattr(panel, 'refresh'):
                 panel.refresh()
         
-        self.status_bar.showMessage("Refreshed", 3000)
+        self.statusBar.showMessage("Refreshed", 3000)
     
     def _on_select_board(self, board_id):
         """Select a board from the menu."""
         try:
             # Update status bar
-            self.status_bar.showMessage(f"Loading board {board_id}...")
+            self.statusBar.showMessage(f"Loading board {board_id}...")
             
             # Select the board in the boards panel
             if "boards" in self.panels:
@@ -642,10 +739,10 @@ class MainWindow(QMainWindow):
             if 'board' in self.controllers:
                 board_name = self.controllers['board'].get_board_name(board_id) or "Unknown"
             
-            self.status_bar.showMessage(f"Selected {board_name} board", 3000)
+            self.statusBar.showMessage(f"Selected {board_name} board", 3000)
         except Exception as e:
             logger.error(f"Error selecting board: {str(e)}")
-            self.status_bar.showMessage(f"Error selecting board: {str(e)}", 5000)
+            self.statusBar.showMessage(f"Error selecting board: {str(e)}", 5000)
             handle_error(
                 exception=e,
                 parent=self,
@@ -672,7 +769,7 @@ class MainWindow(QMainWindow):
         
         if file_path:
             self.dock_manager.save_layout(file_path)
-            self.status_bar.showMessage(f"Layout saved to {file_path}", 3000)
+            self.statusBar.showMessage(f"Layout saved to {file_path}", 3000)
     
     def _load_layout(self):
         """Load dock layout from file."""
@@ -685,26 +782,26 @@ class MainWindow(QMainWindow):
         
         if file_path:
             self.dock_manager.load_layout(file_path)
-            self.status_bar.showMessage(f"Layout loaded from {file_path}", 3000)
+            self.statusBar.showMessage(f"Layout loaded from {file_path}", 3000)
     
     def _on_sync_now(self):
         """Synchronize with Monday.com."""
-        self.status_bar.showMessage("Syncing with Monday.com...")
+        self.statusBar.showMessage("Syncing with Monday.com...")
         
         # Call sync controller
         if 'sync' in self.controllers:
             try:
                 success = self.controllers['sync'].force_sync()
                 if success:
-                    self.status_bar.showMessage("Sync completed successfully", 3000)
+                    self.statusBar.showMessage("Sync completed successfully", 3000)
                 else:
-                    self.status_bar.showMessage("Sync partially completed - rate limit reached", 3000)
+                    self.statusBar.showMessage("Sync partially completed - rate limit reached", 3000)
                 
                 # Refresh panels
                 self._on_refresh()
             except Exception as e:
                 logger.error(f"Sync failed: {str(e)}")
-                self.status_bar.showMessage("Sync failed", 3000)
+                self.statusBar.showMessage("Sync failed", 3000)
                 handle_error(
                     exception=e,
                     parent=self,
@@ -718,10 +815,10 @@ class MainWindow(QMainWindow):
         if checked:
             sync_interval = self.settings.get('sync_interval', 300) * 1000  # convert to milliseconds
             self._update_timer.start(sync_interval)
-            self.status_bar.showMessage(f"Auto-sync enabled (every {sync_interval/1000} seconds)", 3000)
+            self.statusBar.showMessage(f"Auto-sync enabled (every {sync_interval/1000} seconds)", 3000)
         else:
             self._update_timer.stop()
-            self.status_bar.showMessage("Auto-sync disabled", 3000)
+            self.statusBar.showMessage("Auto-sync disabled", 3000)
     
     def _on_about(self):
         """Show about dialog."""
@@ -751,34 +848,46 @@ class MainWindow(QMainWindow):
             logger.info("Auto-sync timer triggered")
             self._on_sync_now()
     
-    def _on_board_selected(self, board_id):
-        """Handle board selection."""
+    def _on_board_selected(self, board_id: str):
+        """
+        Handle board selection.
+        
+        Args:
+            board_id: Selected board ID
+        """
         try:
-            # Update status bar
-            self.status_bar.showMessage(f"Loading board {board_id}...")
-            
-            # Get board name for better status message
-            board_name = "Unknown"
-            if 'board' in self.controllers:
-                board_name = self.controllers['board'].get_board_name(board_id) or "Unknown"
-                self.status_bar.showMessage(f"Loading {board_name} board...")
-            
-            # Load items in the items panel
-            if "items" in self.panels:
-                self.panels["items"].load_board_items(board_id)
+            # Get board name
+            board_name = self.controllers['board'].get_board_name(board_id)
+            if not board_name:
+                logger.error(f"Unknown board ID: {board_id}")
+                return
                 
-            # Update status bar
-            self.status_bar.showMessage(f"Loaded {board_name} board", 3000)
+            logger.info(f"Selected board: {board_name} (ID: {board_id})")
+            
+            # Load board items
+            items = self.controllers['data'].load_board_items(board_id)
+            
+            # Update board view
+            if "boards" in self.panels:
+                if not items:
+                    # Show message if no data
+                    self.panels["boards"].show_message(
+                        f"No data available for {board_name}.\n\n"
+                        "Please use 'Import Board Data...' from the File menu to import data from Excel."
+                    )
+                else:
+                    # Update the items panel instead of the board panel
+                    if "items" in self.panels:
+                        self.panels["items"].load_board_items(board_id)
+            
+            # Update status
+            if hasattr(self, 'statusBar'):
+                self.statusBar.showMessage(f"Loaded {len(items)} items from {board_name}")
+                
         except Exception as e:
             logger.error(f"Error selecting board: {str(e)}")
-            self.status_bar.showMessage(f"Error loading board: {str(e)}", 5000)
-            handle_error(
-                exception=e,
-                parent=self,
-                context={"module": "MainWindow", "method": "_on_board_selected"},
-                title="Board Selection Error"
-            )
-
+            handle_error(e)
+    
     def _on_feedback(self):
         """Handle feedback menu action."""
         from ui.dialogs.feedback_dialog import FeedbackDialog
@@ -788,7 +897,7 @@ class MainWindow(QMainWindow):
     def _on_new(self):
         """Create new project."""
         # TODO: Implement new project creation
-        self.status_bar.showMessage("New project creation not yet implemented", 3000)
+        self.statusBar.showMessage("New project creation not yet implemented", 3000)
     
     def _on_open(self):
         """Open existing project."""
@@ -800,12 +909,12 @@ class MainWindow(QMainWindow):
         )
         if file_path:
             # TODO: Implement project loading
-            self.status_bar.showMessage(f"Opening project: {file_path}", 3000)
+            self.statusBar.showMessage(f"Opening project: {file_path}", 3000)
     
     def _on_save(self):
         """Save current project."""
         # TODO: Implement project saving
-        self.status_bar.showMessage("Saving project...", 3000)
+        self.statusBar.showMessage("Saving project...", 3000)
     
     def _on_save_as(self):
         """Save project as..."""
@@ -817,32 +926,32 @@ class MainWindow(QMainWindow):
         )
         if file_path:
             # TODO: Implement project saving
-            self.status_bar.showMessage(f"Saving project as: {file_path}", 3000)
+            self.statusBar.showMessage(f"Saving project as: {file_path}", 3000)
     
     def _on_undo(self):
         """Undo last action."""
         # TODO: Implement undo functionality
-        self.status_bar.showMessage("Undo not yet implemented", 3000)
+        self.statusBar.showMessage("Undo not yet implemented", 3000)
     
     def _on_redo(self):
         """Redo last action."""
         # TODO: Implement redo functionality
-        self.status_bar.showMessage("Redo not yet implemented", 3000)
+        self.statusBar.showMessage("Redo not yet implemented", 3000)
     
     def _on_cut(self):
         """Cut selection."""
         # TODO: Implement cut functionality
-        self.status_bar.showMessage("Cut not yet implemented", 3000)
+        self.statusBar.showMessage("Cut not yet implemented", 3000)
     
     def _on_copy(self):
         """Copy selection."""
         # TODO: Implement copy functionality
-        self.status_bar.showMessage("Copy not yet implemented", 3000)
+        self.statusBar.showMessage("Copy not yet implemented", 3000)
     
     def _on_paste(self):
         """Paste selection."""
         # TODO: Implement paste functionality
-        self.status_bar.showMessage("Paste not yet implemented", 3000)
+        self.statusBar.showMessage("Paste not yet implemented", 3000)
     
     def _toggle_dock_manager(self):
         """Toggle dock manager visibility."""
@@ -861,7 +970,7 @@ class MainWindow(QMainWindow):
     def _on_sync_settings(self):
         """Configure sync settings."""
         # TODO: Implement sync settings dialog
-        self.status_bar.showMessage("Sync settings not yet implemented", 3000)
+        self.statusBar.showMessage("Sync settings not yet implemented", 3000)
     
     def _on_documentation(self):
         """View documentation."""
@@ -882,7 +991,7 @@ class MainWindow(QMainWindow):
     def _on_feedback_updated(self):
         """Handle feedback update."""
         # Refresh any relevant UI elements
-        self.status_bar.showMessage("Feedback updated", 3000)
+        self.statusBar.showMessage("Feedback updated", 3000)
     
     def _setup_settlement_calculator(self):
         """Setup the settlement calculator menu and toolbar items."""
@@ -941,7 +1050,7 @@ class MainWindow(QMainWindow):
             formatted_amount = f"${amount:,.2f}"
             
             # Show notification to the user
-            self.status_bar.showMessage(f"Settlement calculation saved for claim {claim_id}: {formatted_amount}", 5000)
+            self.statusBar.showMessage(f"Settlement calculation saved for claim {claim_id}: {formatted_amount}", 5000)
             
             # Refresh any relevant views
             if hasattr(self, "refresh_claims_view") and callable(self.refresh_claims_view):
@@ -958,7 +1067,7 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"Error handling settlement calculation saved: {str(e)}")
-            self.status_bar.showMessage(f"Error processing saved calculation: {str(e)}", 3000)
+            self.statusBar.showMessage(f"Error processing saved calculation: {str(e)}", 3000)
 
     def _on_launch_settlement_calculator(self):
         """Launch the settlement calculator dialog."""
@@ -1113,7 +1222,7 @@ class MainWindow(QMainWindow):
         
         # Refresh status bar
         enabled_features = feature_flags.get_enabled_features()
-        self.status_bar.showMessage(f"Active features: {len(enabled_features)}", 3000)
+        self.statusBar.showMessage(f"Active features: {len(enabled_features)}", 3000)
     
     def _refresh_ui_for_feature_changes(self):
         """Update UI elements based on feature flag changes."""
@@ -1148,7 +1257,7 @@ class MainWindow(QMainWindow):
             logger.info(f"UI refreshed with {feature_count} enabled features")
             
             # Update status bar
-            self.status_bar.showMessage(f"Features updated: {feature_count} features enabled", 3000)
+            self.statusBar.showMessage(f"Features updated: {feature_count} features enabled", 3000)
             
         except Exception as e:
             logger.error(f"Error refreshing UI for feature changes: {str(e)}")
@@ -1156,4 +1265,88 @@ class MainWindow(QMainWindow):
                 self,
                 "Feature Update Error",
                 f"Error updating UI for feature changes: {str(e)}"
-            ) 
+            )
+
+    def show_board_manager(self):
+        """Show the board manager dialog."""
+        try:
+            dialog = BoardManagerDialog(self.controllers['board'], self)
+            dialog.board_updated.connect(self.refresh_boards)
+            dialog.exec_()
+        except Exception as e:
+            handle_error(e, self, "Error showing board manager")
+            
+    def show_column_manager(self):
+        """Show the column manager dialog."""
+        try:
+            # Get current board ID
+            current_board = self.panels['items'].get_current_board()
+            if not current_board:
+                QMessageBox.warning(
+                    self, "Warning",
+                    "Please select a board first."
+                )
+                return
+                
+            dialog = ColumnManagerDialog(
+                self.controllers['board'],
+                current_board,
+                self
+            )
+            dialog.column_updated.connect(self.refresh_columns)
+            dialog.exec_()
+        except Exception as e:
+            handle_error(e, self, "Error showing column manager")
+            
+    def show_item_manager(self):
+        """Show the item manager dialog."""
+        try:
+            # Get current board ID
+            current_board = self.panels['items'].get_current_board()
+            if not current_board:
+                QMessageBox.warning(
+                    self, "Warning",
+                    "Please select a board first."
+                )
+                return
+                
+            dialog = ItemManagerDialog(
+                self.controllers['board'],
+                current_board,
+                self
+            )
+            dialog.item_updated.connect(self.refresh_items)
+            dialog.exec_()
+        except Exception as e:
+            handle_error(e, self, "Error showing item manager")
+            
+    def refresh_boards(self):
+        """Refresh the boards list."""
+        try:
+            self.panels['items'].refresh_boards()
+        except Exception as e:
+            handle_error(e, self, "Error refreshing boards")
+            
+    def refresh_columns(self):
+        """Refresh the columns list."""
+        try:
+            self.panels['items'].refresh_columns()
+        except Exception as e:
+            handle_error(e, self, "Error refreshing columns")
+            
+    def refresh_items(self):
+        """Refresh the items list."""
+        try:
+            self.panels['items'].refresh_items()
+        except Exception as e:
+            handle_error(e, self, "Error refreshing items")
+            
+    def show_about(self):
+        """Show the about dialog."""
+        QMessageBox.about(
+            self,
+            "About PA CRM App",
+            "PA CRM App\n\n"
+            "A comprehensive CRM application for managing claims and settlements.\n\n"
+            "Version 1.0.0"
+        ) 

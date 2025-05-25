@@ -1,49 +1,337 @@
 """
-Board controller for managing Monday.com boards.
+Board controller for managing local boards.
 """
 
 import logging
 from typing import Dict, List, Any, Optional
+from datetime import datetime
+
+from models.database import Board, BoardColumn, BoardItem, Session
+from utils.error_handling import handle_error
 
 # Get logger
 logger = logging.getLogger("monday_uploader.board_controller")
 
 class BoardController:
     """
-    Controller for managing Monday.com boards.
+    Controller for managing local boards.
     """
     
-    def __init__(self, monday_api, session, default_boards: Dict[str, str]):
+    def __init__(self, session=None, default_boards=None):
         """
         Initialize the board controller.
         
         Args:
-            monday_api: MondayAPI instance
             session: SQLAlchemy session
             default_boards: Default boards mapping
         """
-        self.monday_api = monday_api
-        self.session = session
-        self.default_boards = default_boards
-        self.board_map = default_boards.copy()
-        
-        # Store board details cache
+        self.session = session or Session()
+        self.default_boards = default_boards or {}
+        self.board_map = self.default_boards
         self._board_details = {}
         
-        logger.info("Board controller initialized")
-    
-    def set_api(self, monday_api):
-        """Update the API instance."""
-        self.monday_api = monday_api
+        # Initialize boards in database if needed
+        self._init_boards()
         
-    def get_boards(self) -> Dict[str, str]:
-        """
-        Get all available boards.
+    def _init_boards(self):
+        """Initialize boards in the database."""
+        try:
+            # Get existing boards
+            existing_boards = self.session.query(Board).all()
+            existing_board_ids = {board.id for board in existing_boards}
+            
+            # Add any missing boards from default_boards
+            for name, board_id in self.default_boards.items():
+                if board_id not in existing_board_ids:
+                    board = Board(
+                        id=board_id,
+                        name=name,
+                        archived=False
+                    )
+                    self.session.add(board)
+            
+            # Commit changes
+            self.session.commit()
+        except Exception as e:
+            logger.error(f"Error initializing boards: {str(e)}")
+            self.session.rollback()
         
-        Returns:
-            Dict of board name to board ID
-        """
-        return self.board_map
+    def get_boards(self) -> List[Dict[str, Any]]:
+        """Get all active boards."""
+        try:
+            boards = self.session.query(Board).filter_by(archived=False).all()
+            return [
+                {
+                    'id': board.id,
+                    'name': board.name,
+                    'created_at': board.created_at,
+                    'updated_at': board.updated_at
+                }
+                for board in boards
+            ]
+        except Exception as e:
+            logger.error(f"Error getting boards: {str(e)}")
+            return []
+            
+    def get_board(self, board_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific board by ID."""
+        try:
+            board = self.session.query(Board).get(board_id)
+            if board:
+                return {
+                    'id': board.id,
+                    'name': board.name,
+                    'created_at': board.created_at,
+                    'updated_at': board.updated_at
+                }
+            return None
+        except Exception as e:
+            handle_error(e, "Error getting board")
+            return None
+            
+    def create_board(self, name: str) -> Optional[str]:
+        """Create a new board."""
+        try:
+            board = Board(name=name)
+            self.session.add(board)
+            self.session.commit()
+            return board.id
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error creating board")
+            return None
+            
+    def update_board(self, board_id: str, name: str) -> bool:
+        """Update a board's name."""
+        try:
+            board = self.session.query(Board).get(board_id)
+            if board:
+                board.name = name
+                board.updated_at = datetime.utcnow()
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error updating board")
+            return False
+            
+    def archive_board(self, board_id: str) -> bool:
+        """Archive a board."""
+        try:
+            board = self.session.query(Board).get(board_id)
+            if board:
+                board.archived = True
+                board.updated_at = datetime.utcnow()
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error archiving board")
+            return False
+            
+    def delete_board(self, board_id: str) -> bool:
+        """Delete a board and all its contents."""
+        try:
+            board = self.session.query(Board).get(board_id)
+            if board:
+                # Delete all items
+                self.session.query(BoardItem).filter_by(board_id=board_id).delete()
+                # Delete all columns
+                self.session.query(BoardColumn).filter_by(board_id=board_id).delete()
+                # Delete board
+                self.session.delete(board)
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error deleting board")
+            return False
+            
+    def get_board_columns(self, board_id: str) -> List[Dict[str, Any]]:
+        """Get all columns for a board."""
+        try:
+            columns = self.session.query(BoardColumn).filter_by(
+                board_id=board_id, archived=False
+            ).all()
+            return [
+                {
+                    'id': column.id,
+                    'title': column.title,
+                    'type': column.type,
+                    'settings': column.settings,
+                    'created_at': column.created_at,
+                    'updated_at': column.updated_at
+                }
+                for column in columns
+            ]
+        except Exception as e:
+            handle_error(e, "Error getting board columns")
+            return []
+            
+    def create_column(self, board_id: str, title: str, type: str, settings: Dict = None) -> Optional[str]:
+        """Create a new column in a board."""
+        try:
+            column = BoardColumn(
+                board_id=board_id,
+                title=title,
+                type=type,
+                settings=settings or {}
+            )
+            self.session.add(column)
+            self.session.commit()
+            return column.id
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error creating column")
+            return None
+            
+    def update_column(self, board_id: str, column_id: str, title: str, type: str, settings: Dict = None) -> bool:
+        """Update a column's properties."""
+        try:
+            column = self.session.query(BoardColumn).get(column_id)
+            if column and column.board_id == board_id:
+                column.title = title
+                column.type = type
+                if settings is not None:
+                    column.settings = settings
+                column.updated_at = datetime.utcnow()
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error updating column")
+            return False
+            
+    def archive_column(self, board_id: str, column_id: str) -> bool:
+        """Archive a column."""
+        try:
+            column = self.session.query(BoardColumn).get(column_id)
+            if column and column.board_id == board_id:
+                column.archived = True
+                column.updated_at = datetime.utcnow()
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error archiving column")
+            return False
+            
+    def delete_column(self, board_id: str, column_id: str) -> bool:
+        """Delete a column and its data."""
+        try:
+            column = self.session.query(BoardColumn).get(column_id)
+            if column and column.board_id == board_id:
+                # Delete column data from items
+                items = self.session.query(BoardItem).filter_by(board_id=board_id).all()
+                for item in items:
+                    if column_id in item.data:
+                        del item.data[column_id]
+                        item.updated_at = datetime.utcnow()
+                # Delete column
+                self.session.delete(column)
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error deleting column")
+            return False
+            
+    def get_board_items(self, board_id: str) -> List[Dict[str, Any]]:
+        """Get all items for a board."""
+        try:
+            items = self.session.query(BoardItem).filter_by(
+                board_id=board_id, archived=False
+            ).all()
+            return [
+                {
+                    'id': item.id,
+                    'data': item.data,
+                    'created_at': item.created_at,
+                    'updated_at': item.updated_at
+                }
+                for item in items
+            ]
+        except Exception as e:
+            handle_error(e, "Error getting board items")
+            return []
+            
+    def get_item(self, board_id: str, item_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific item by ID."""
+        try:
+            item = self.session.query(BoardItem).get(item_id)
+            if item and item.board_id == board_id:
+                return {
+                    'id': item.id,
+                    'data': item.data,
+                    'created_at': item.created_at,
+                    'updated_at': item.updated_at
+                }
+            return None
+        except Exception as e:
+            handle_error(e, "Error getting item")
+            return None
+            
+    def create_item(self, board_id: str, data: Dict[str, Any]) -> Optional[str]:
+        """Create a new item in a board."""
+        try:
+            item = BoardItem(board_id=board_id, data=data)
+            self.session.add(item)
+            self.session.commit()
+            return item.id
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error creating item")
+            return None
+            
+    def update_item(self, board_id: str, item_id: str, data: Dict[str, Any]) -> bool:
+        """Update an item's data."""
+        try:
+            item = self.session.query(BoardItem).get(item_id)
+            if item and item.board_id == board_id:
+                item.data.update(data)
+                item.updated_at = datetime.utcnow()
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error updating item")
+            return False
+            
+    def archive_item(self, board_id: str, item_id: str) -> bool:
+        """Archive an item."""
+        try:
+            item = self.session.query(BoardItem).get(item_id)
+            if item and item.board_id == board_id:
+                item.archived = True
+                item.updated_at = datetime.utcnow()
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error archiving item")
+            return False
+            
+    def delete_item(self, board_id: str, item_id: str) -> bool:
+        """Delete an item."""
+        try:
+            item = self.session.query(BoardItem).get(item_id)
+            if item and item.board_id == board_id:
+                self.session.delete(item)
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            self.session.rollback()
+            handle_error(e, "Error deleting item")
+            return False
     
     def get_board_id(self, board_name: str) -> Optional[str]:
         """
@@ -131,41 +419,4 @@ class BoardController:
         # Cache board details
         self._board_details[board_id] = board_details
         
-        return board_details
-    
-    def refresh_board(self, board_id: str) -> bool:
-        """
-        Refresh a specific board from Monday.com.
-        
-        Args:
-            board_id: Board ID to refresh
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # In a real implementation, this would fetch the latest board data from Monday.com
-            # For now, we just clear the cached board details to force a refresh
-            if board_id in self._board_details:
-                del self._board_details[board_id]
-            
-            logger.info(f"Refreshed board {board_id}")
-            return True
-        except Exception as e:
-            logger.error(f"Error refreshing board {board_id}: {str(e)}")
-            return False
-    
-    def sync_boards(self) -> bool:
-        """
-        Synchronize boards from Monday.com.
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # For now, just use default boards
-            # In a real implementation, you would fetch boards from Monday.com API
-            return True
-        except Exception as e:
-            logger.error(f"Error syncing boards: {str(e)}")
-            return False 
+        return board_details 

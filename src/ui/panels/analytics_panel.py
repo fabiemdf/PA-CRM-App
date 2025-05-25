@@ -10,10 +10,14 @@ from typing import Dict, List, Any, Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QComboBox, QFrame, QGridLayout, QSizePolicy
+    QComboBox, QFrame, QGridLayout, QSizePolicy,
+    QTableWidget, QTableWidgetItem
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QColor
+
+# Initialize PLOTLY_AVAILABLE at module level
+PLOTLY_AVAILABLE = False
 
 try:
     import plotly.graph_objects as go
@@ -21,7 +25,6 @@ try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
     PLOTLY_AVAILABLE = True
 except ImportError:
-    PLOTLY_AVAILABLE = False
     logging.warning("Plotly not available, using basic charts")
 
 logger = logging.getLogger(__name__)
@@ -127,17 +130,30 @@ class AnalyticsPanel(QWidget):
         
         # Chart area
         if PLOTLY_AVAILABLE:
-            chart = QWebEngineView()
-            chart.setMinimumHeight(300)
+            try:
+                chart = QWebEngineView()
+                chart.setMinimumHeight(300)
+            except Exception as e:
+                logger.warning(f"Failed to create QWebEngineView: {str(e)}")
+                chart = self._create_table_widget()
         else:
-            chart = QLabel("Chart visualization not available")
-            chart.setStyleSheet("color: #666;")
-            chart.setAlignment(Qt.AlignCenter)
-            chart.setMinimumHeight(300)
+            chart = self._create_table_widget()
         
         layout.addWidget(chart)
         container.chart = chart
         return container
+
+    def _create_table_widget(self) -> QTableWidget:
+        """Create a table widget for basic visualization"""
+        table = QTableWidget()
+        table.setMinimumHeight(300)
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Category", "Value"])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setAlternatingRowColors(True)
+        return table
 
     def set_analytics_controller(self, controller):
         """Set the analytics controller and refresh data"""
@@ -183,116 +199,144 @@ class AnalyticsPanel(QWidget):
         # Format average settlement time
         avg_time = stats['avg_settlement_time']
         if avg_time:
-            days = avg_time.days
-            self.stats_cards['Avg Settlement Time'].value_label.setText(f"{days} days")
+            if isinstance(avg_time, float):
+                self.stats_cards['Avg Settlement Time'].value_label.setText(f"{int(avg_time)} days")
+            else:
+                days = avg_time.days
+                self.stats_cards['Avg Settlement Time'].value_label.setText(f"{days} days")
         else:
             self.stats_cards['Avg Settlement Time'].value_label.setText("N/A")
 
     def update_status_chart(self):
         """Update claims by status chart"""
-        if not PLOTLY_AVAILABLE:
-            return
-
         try:
             status_data = self.analytics_controller.get_claims_by_status()
             
-            fig = go.Figure(data=[
-                go.Pie(
-                    labels=[d['status'] for d in status_data],
-                    values=[d['count'] for d in status_data],
-                    hole=.3
+            if PLOTLY_AVAILABLE and isinstance(self.status_chart.chart, QWebEngineView):
+                fig = go.Figure(data=[
+                    go.Pie(
+                        labels=[d['status'] for d in status_data],
+                        values=[d['count'] for d in status_data],
+                        hole=.3
+                    )
+                ])
+                
+                fig.update_layout(
+                    title="Claims by Status",
+                    showlegend=True,
+                    height=300
                 )
-            ])
-            
-            fig.update_layout(
-                title="Claims by Status",
-                showlegend=True,
-                height=300
-            )
-            
-            self.status_chart.setHtml(fig.to_html(include_plotlyjs='cdn'))
+                
+                self.status_chart.chart.setHtml(fig.to_html(include_plotlyjs='cdn'))
+            else:
+                # Update table widget
+                table = self.status_chart.chart
+                table.setRowCount(len(status_data))
+                for i, data in enumerate(status_data):
+                    table.setItem(i, 0, QTableWidgetItem(str(data['status'])))
+                    table.setItem(i, 1, QTableWidgetItem(str(data['count'])))
+                table.resizeColumnsToContents()
 
         except Exception as e:
             logger.error(f"Error updating status chart: {str(e)}")
 
     def update_trend_chart(self):
         """Update monthly claims trend chart"""
-        if not PLOTLY_AVAILABLE:
-            return
-
         try:
             trend_data = self.analytics_controller.get_monthly_claims_trend()
             
-            fig = go.Figure(data=[
-                go.Bar(
-                    x=[d['month'] for d in trend_data],
-                    y=[d['count'] for d in trend_data]
+            if PLOTLY_AVAILABLE and isinstance(self.trend_chart.chart, QWebEngineView):
+                fig = go.Figure(data=[
+                    go.Bar(
+                        x=[d['month'] for d in trend_data],
+                        y=[d['count'] for d in trend_data]
+                    )
+                ])
+                
+                fig.update_layout(
+                    title="Monthly Claims Trend",
+                    xaxis_title="Month",
+                    yaxis_title="Number of Claims",
+                    height=300
                 )
-            ])
-            
-            fig.update_layout(
-                title="Monthly Claims Trend",
-                xaxis_title="Month",
-                yaxis_title="Number of Claims",
-                height=300
-            )
-            
-            self.trend_chart.setHtml(fig.to_html(include_plotlyjs='cdn'))
+                
+                self.trend_chart.chart.setHtml(fig.to_html(include_plotlyjs='cdn'))
+            else:
+                # Update table widget
+                table = self.trend_chart.chart
+                table.setRowCount(len(trend_data))
+                for i, data in enumerate(trend_data):
+                    table.setItem(i, 0, QTableWidgetItem(str(data['month'])))
+                    table.setItem(i, 1, QTableWidgetItem(str(data['count'])))
+                table.resizeColumnsToContents()
 
         except Exception as e:
             logger.error(f"Error updating trend chart: {str(e)}")
 
     def update_amounts_chart(self):
         """Update settlement amounts chart"""
-        if not PLOTLY_AVAILABLE:
-            return
-
         try:
-            amounts = self.analytics_controller.get_settlement_amounts()
+            amounts_data = self.analytics_controller.get_settlement_amounts()
             
-            fig = go.Figure(data=[
-                go.Bar(
-                    x=['Min', 'Max', 'Average'],
-                    y=[amounts['min'], amounts['max'], amounts['avg']],
-                    text=[f"${v:,.2f}" for v in [amounts['min'], amounts['max'], amounts['avg']]],
-                    textposition='auto',
+            if PLOTLY_AVAILABLE and isinstance(self.amounts_chart.chart, QWebEngineView):
+                fig = go.Figure(data=[
+                    go.Bar(
+                        x=['Min', 'Max', 'Average'],
+                        y=[amounts_data['min'], amounts_data['max'], amounts_data['avg']]
+                    )
+                ])
+                
+                fig.update_layout(
+                    title="Settlement Amounts",
+                    xaxis_title="Metric",
+                    yaxis_title="Amount",
+                    height=300
                 )
-            ])
-            
-            fig.update_layout(
-                title="Settlement Amounts",
-                yaxis_title="Amount ($)",
-                height=300
-            )
-            
-            self.amounts_chart.setHtml(fig.to_html(include_plotlyjs='cdn'))
+                
+                self.amounts_chart.chart.setHtml(fig.to_html(include_plotlyjs='cdn'))
+            else:
+                # Update table widget
+                table = self.amounts_chart.chart
+                table.setRowCount(3)
+                metrics = ['Min', 'Max', 'Average']
+                values = [amounts_data['min'], amounts_data['max'], amounts_data['avg']]
+                for i, (metric, value) in enumerate(zip(metrics, values)):
+                    table.setItem(i, 0, QTableWidgetItem(metric))
+                    table.setItem(i, 1, QTableWidgetItem(f"${value:,.2f}"))
+                table.resizeColumnsToContents()
 
         except Exception as e:
             logger.error(f"Error updating amounts chart: {str(e)}")
 
     def update_companies_chart(self):
         """Update claims by insurance company chart"""
-        if not PLOTLY_AVAILABLE:
-            return
-
         try:
             company_data = self.analytics_controller.get_claims_by_insurance_company()
             
-            fig = go.Figure(data=[
-                go.Bar(
-                    x=[d['company'] for d in company_data],
-                    y=[d['count'] for d in company_data]
+            if PLOTLY_AVAILABLE and isinstance(self.companies_chart.chart, QWebEngineView):
+                fig = go.Figure(data=[
+                    go.Bar(
+                        x=[d['company'] for d in company_data],
+                        y=[d['count'] for d in company_data]
+                    )
+                ])
+                
+                fig.update_layout(
+                    title="Claims by Insurance Company",
+                    xaxis_title="Company",
+                    yaxis_title="Number of Claims",
+                    height=300
                 )
-            ])
-            
-            fig.update_layout(
-                title="Claims by Insurance Company",
-                xaxis_title="Company",
-                yaxis_title="Number of Claims",
-                height=300
-            )
-            
-            self.companies_chart.setHtml(fig.to_html(include_plotlyjs='cdn'))
+                
+                self.companies_chart.chart.setHtml(fig.to_html(include_plotlyjs='cdn'))
+            else:
+                # Update table widget
+                table = self.companies_chart.chart
+                table.setRowCount(len(company_data))
+                for i, data in enumerate(company_data):
+                    table.setItem(i, 0, QTableWidgetItem(str(data['company'])))
+                    table.setItem(i, 1, QTableWidgetItem(str(data['count'])))
+                table.resizeColumnsToContents()
 
         except Exception as e:
             logger.error(f"Error updating companies chart: {str(e)}")

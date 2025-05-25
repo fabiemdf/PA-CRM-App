@@ -106,7 +106,7 @@ class SettlementController:
         """Get claim data needed for settlement calculation"""
         try:
             result = self.db_manager.query(
-                "SELECT id, policy_limits, deductible FROM claims WHERE id = ?",
+                "SELECT id, policy_limits, deductible FROM PA_Claims WHERE id = ?",
                 (claim_id,)
             )
             

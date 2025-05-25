@@ -14,6 +14,7 @@ from sqlalchemy import create_engine, inspect, MetaData, Table, Column, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.engine import Engine
 from sqlalchemy.schema import CreateTable, DropTable
+from sqlalchemy.orm import sessionmaker
 
 logger = logging.getLogger("monday_uploader.db_migration")
 
@@ -447,4 +448,169 @@ class DatabaseMigration:
             
         except Exception as e:
             logger.error(f"Error creating feature migration: {str(e)}")
-            return None 
+            return None
+
+def migrate_claim_settlement_fields(engine):
+    """
+    Migrate claim settlement fields:
+    1. Add settlement_amount and settled_at columns
+    2. Copy data from final_settlement to settlement_amount
+    3. Set settled_at to updated_at for claims with settlements
+    """
+    try:
+        # Create a session
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        
+        # Check if columns exist first
+        inspector = inspect(engine)
+        columns = [col['name'] for col in inspector.get_columns('claims')]
+        
+        # Add settlement_amount if it doesn't exist
+        if 'settlement_amount' not in columns:
+            session.execute(text("""
+                ALTER TABLE claims 
+                ADD COLUMN settlement_amount FLOAT
+            """))
+        
+        # Add settled_at if it doesn't exist
+        if 'settled_at' not in columns:
+            session.execute(text("""
+                ALTER TABLE claims 
+                ADD COLUMN settled_at TIMESTAMP
+            """))
+        
+        # Migrate data
+        session.execute(text("""
+            UPDATE claims 
+            SET settlement_amount = final_settlement,
+                settled_at = updated_at
+            WHERE final_settlement IS NOT NULL 
+            AND final_settlement > 0
+        """))
+        
+        # Commit changes
+        session.commit()
+        logger.info("Successfully migrated claim settlement fields")
+        
+    except Exception as e:
+        logger.error(f"Error migrating claim settlement fields: {str(e)}")
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+def apply_pending_migrations(engine):
+    """
+    Apply all pending database migrations.
+    Returns a tuple of (migrations_applied, migrations_failed)
+    """
+    migrations_applied = 0
+    migrations_failed = 0
+    
+    try:
+        # Create migrations table if it doesn't exist
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS migrations (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+        
+        # Get list of applied migrations
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT name FROM migrations"))
+            applied_migrations = {row[0] for row in result}
+        
+        # Define migrations to apply
+        migrations = [
+            ('add_claim_settlement_fields', migrate_claim_settlement_fields)
+        ]
+        
+        # Apply pending migrations
+        for migration_name, migration_func in migrations:
+            if migration_name not in applied_migrations:
+                try:
+                    migration_func(engine)
+                    
+                    # Record migration
+                    with engine.connect() as conn:
+                        conn.execute(
+                            text("INSERT INTO migrations (name) VALUES (:name)"),
+                            {"name": migration_name}
+                        )
+                        conn.commit()
+                    
+                    migrations_applied += 1
+                    logger.info(f"Applied migration: {migration_name}")
+                    
+                except Exception as e:
+                    migrations_failed += 1
+                    logger.error(f"Failed to apply migration {migration_name}: {str(e)}")
+        
+        return migrations_applied, migrations_failed
+        
+    except Exception as e:
+        logger.error(f"Error applying migrations: {str(e)}")
+        return migrations_applied, migrations_failed
+
+def get_applied_migrations(engine):
+    """Get list of applied migrations"""
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT name, applied_at FROM migrations ORDER BY applied_at"))
+            return [(row[0], row[1]) for row in result]
+    except Exception as e:
+        logger.error(f"Error getting applied migrations: {str(e)}")
+        return []
+
+def create_sample_data(session):
+    """Create sample data for testing the analytics panel."""
+    try:
+        from models.database import Claim
+        from datetime import datetime, timedelta
+        import random
+
+        # Check if we already have claims
+        if session.query(Claim).count() > 0:
+            logger.info("Sample data already exists")
+            return
+
+        # Create sample claims
+        statuses = ['Open', 'In Progress', 'Pending', 'Settled', 'Closed']
+        companies = ['State Farm', 'Allstate', 'Progressive', 'Geico', 'Liberty Mutual']
+        loss_types = ['Fire', 'Water', 'Wind', 'Hail', 'Theft']
+
+        # Create claims for the last year
+        for i in range(50):
+            created_at = datetime.now() - timedelta(days=random.randint(0, 365))
+            status = random.choice(statuses)
+            
+            # If status is Settled, add settlement data
+            settlement_amount = None
+            settled_at = None
+            if status == 'Settled':
+                settlement_amount = random.uniform(10000, 100000)
+                settled_at = created_at + timedelta(days=random.randint(30, 180))
+
+            claim = Claim(
+                name=f"Claim {i+1}",
+                claim_number=f"CLM-{random.randint(1000, 9999)}",
+                status=status,
+                insurance_company=random.choice(companies),
+                loss_type=random.choice(loss_types),
+                settlement_amount=settlement_amount,
+                settled_at=settled_at,
+                created_at=created_at,
+                updated_at=created_at
+            )
+            session.add(claim)
+
+        session.commit()
+        logger.info("Created sample data successfully")
+    except Exception as e:
+        logger.error(f"Error creating sample data: {str(e)}")
+        session.rollback() 

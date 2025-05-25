@@ -5,7 +5,7 @@ Board panel for displaying and selecting Monday.com boards.
 import logging
 from typing import Dict, List, Any, Optional
 
-from PySide6.QtCore import Qt, Signal, Slot, QSize
+from PySide6.QtCore import Qt, Signal, Slot, QSize, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
     QListWidget, QListWidgetItem, QLineEdit, QMenu, QMessageBox
@@ -26,36 +26,38 @@ class BoardPanel(QWidget):
     # Signals
     board_selected = Signal(str)  # Emits board ID when a board is selected
     
-    def __init__(self, board_controller: BoardController, parent=None):
+    def __init__(self, parent=None, board_controller=None):
         """
         Initialize the board panel.
         
         Args:
-            board_controller: Board controller instance
             parent: Parent widget
+            board_controller: Board controller instance
         """
         super().__init__(parent)
         
+        if not board_controller:
+            raise ValueError("Board controller is required")
         self.board_controller = board_controller
         self.boards: List[Dict[str, Any]] = []
         
         # Create UI
-        self._create_ui()
+        self.setup_ui()
         
         # Load boards
         self.load_boards()
         
         logger.debug("Board panel initialized")
     
-    def _create_ui(self):
-        """Create the user interface."""
-        # Create main layout
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+    def setup_ui(self):
+        """Set up the user interface."""
+        # Create layout
+        layout = QVBoxLayout()
+        self.setLayout(layout)
         
         # Create search layout
         search_layout = QHBoxLayout()
-        main_layout.addLayout(search_layout)
+        layout.addLayout(search_layout)
         
         # Create search field
         self.search_edit = QLineEdit()
@@ -68,63 +70,49 @@ class BoardPanel(QWidget):
         self.refresh_button.clicked.connect(self.load_boards)
         search_layout.addWidget(self.refresh_button)
         
-        # Create list widget
-        self.list_widget = QListWidget()
-        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
-        self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
-        main_layout.addWidget(self.list_widget)
+        # Create board list
+        self.board_list = QListWidget()
+        self.board_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.board_list.customContextMenuRequested.connect(self._show_context_menu)
+        self.board_list.itemDoubleClicked.connect(self._on_item_double_clicked)
+        layout.addWidget(self.board_list)
         
         # Create status label
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: gray;")
-        main_layout.addWidget(self.status_label)
+        layout.addWidget(self.status_label)
     
     def load_boards(self):
         """Load boards from the controller."""
         try:
-            # Update status
-            self.status_label.setText("Loading boards...")
-            self.status_label.setStyleSheet("color: blue;")
-            self.refresh_button.setEnabled(False)
-            
-            # Clear list
-            self.list_widget.clear()
-            
             # Get boards from controller
-            board_map = self.board_controller.get_boards()
-            
-            # Check if any boards were found
-            if not board_map:
+            boards = self.board_controller.get_boards()
+            if not boards:
+                logger.warning("No boards found")
                 self.status_label.setText("No boards found")
-                self.status_label.setStyleSheet("color: gray;")
-                self.refresh_button.setEnabled(True)
                 return
-            
-            # Convert board_map to a list of board objects
-            self.boards = []
-            for name, board_id in board_map.items():
-                self.boards.append({"name": name, "id": board_id})
+                
+            # Clear existing items
+            self.board_list.clear()
             
             # Add boards to list
-            for board in self.boards:
-                item = QListWidgetItem(board["name"])
-                item.setData(Qt.UserRole, board["id"])
+            for board in boards:
+                item = QListWidgetItem(board['name'])
+                item.setData(Qt.UserRole, board['id'])
                 
                 # Add state as tooltip
                 if "state" in board:
                     item.setToolTip(f"State: {board['state']}")
                 
-                self.list_widget.addItem(item)
+                self.board_list.addItem(item)
             
-            # Update status
-            self.status_label.setText(f"Loaded {len(self.boards)} boards")
-            self.status_label.setStyleSheet("color: green;")
+            logger.info(f"Loaded {len(boards)} boards")
+            self.status_label.setText(f"Loaded {len(boards)} boards")
             
         except Exception as e:
             logger.error(f"Failed to load boards: {str(e)}")
             self.status_label.setText("Failed to load boards")
-            self.status_label.setStyleSheet("color: red;")
+            handle_error(e)
             
             # Show error dialog
             handle_error(
@@ -132,10 +120,6 @@ class BoardPanel(QWidget):
                 parent=self,
                 context={"module": "BoardPanel", "method": "load_boards"}
             )
-            
-        finally:
-            # Enable refresh button
-            self.refresh_button.setEnabled(True)
     
     def select_board(self, board_id: str):
         """
@@ -145,11 +129,11 @@ class BoardPanel(QWidget):
             board_id: Board ID to select
         """
         # Find board in list
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
+        for i in range(self.board_list.count()):
+            item = self.board_list.item(i)
             if item.data(Qt.UserRole) == board_id:
                 # Select item
-                self.list_widget.setCurrentItem(item)
+                self.board_list.setCurrentItem(item)
                 
                 # Emit signal
                 self.board_selected.emit(board_id)
@@ -167,14 +151,14 @@ class BoardPanel(QWidget):
         """
         # If no search text, show all boards
         if not text.strip():
-            for i in range(self.list_widget.count()):
-                self.list_widget.item(i).setHidden(False)
+            for i in range(self.board_list.count()):
+                self.board_list.item(i).setHidden(False)
             return
         
         # Hide boards that don't match the search text
         text = text.strip().lower()
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
+        for i in range(self.board_list.count()):
+            item = self.board_list.item(i)
             board_name = item.text().lower()
             
             item.setHidden(text not in board_name)
@@ -187,7 +171,7 @@ class BoardPanel(QWidget):
             pos: Mouse position
         """
         # Get selected item
-        item = self.list_widget.itemAt(pos)
+        item = self.board_list.itemAt(pos)
         if not item:
             return
         
@@ -219,7 +203,7 @@ class BoardPanel(QWidget):
         menu.addAction(properties_action)
         
         # Show menu
-        menu.exec(self.list_widget.mapToGlobal(pos))
+        menu.exec(self.board_list.mapToGlobal(pos))
     
     def _on_item_double_clicked(self, item: QListWidgetItem):
         """
@@ -258,7 +242,7 @@ class BoardPanel(QWidget):
                 self.load_boards()
                 
                 # Show success message
-                self.status_bar.showMessage("Board refreshed", 3000)
+                self.status_label.setText("Board refreshed", 3000)
             else:
                 # Show error message
                 QMessageBox.warning(
@@ -339,4 +323,17 @@ class BoardPanel(QWidget):
                 exception=e,
                 parent=self,
                 context={"module": "BoardPanel", "method": "_show_properties"}
-            ) 
+            )
+    
+    def show_message(self, message: str, duration: int = 3000):
+        """
+        Show a message to the user.
+        
+        Args:
+            message: Message to display
+            duration: Duration in milliseconds (default: 3000)
+        """
+        QMessageBox.information(self, "Information", message)
+        self.status_label.setText(message)
+        if duration > 0:
+            QTimer.singleShot(duration, lambda: self.status_label.setText("Ready")) 

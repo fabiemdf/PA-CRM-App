@@ -1,0 +1,217 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  users     User[]
+  claims    Claim[]
+  contacts  Contact[]
+  insurers  Insurer[]
+  templates Template[]
+  fees      Fee[]
+  commissions Commission[]
+  documents Document[]
+  cases     Case[]
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  firstName String
+  lastName  String
+  role      String   @default("USER")
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  templates Template[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdFees      Fee[]        @relation("CreatedFees")
+  commissions      Commission[]
+  createdDocuments         Document[]         @relation("CreatedDocuments")
+  createdDocumentVersions  DocumentVersion[]  @relation("CreatedDocumentVersions")
+
+  @@index([tenantId])
+}
+
+model Claim {
+  id          String   @id @default(uuid())
+  claimNumber String
+  status      String   @default("OPEN")
+  description String?
+  amount      Float?
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  contactId   String
+  contact     Contact  @relation(fields: [contactId], references: [id])
+  insurerId   String
+  insurer     Insurer  @relation(fields: [insurerId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([contactId])
+  @@index([insurerId])
+}
+
+model Contact {
+  id        String   @id @default(uuid())
+  firstName String
+  lastName  String
+  email     String?
+  phone     String?
+  address   String?
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  claims    Claim[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model Insurer {
+  id        String   @id @default(uuid())
+  name      String
+  code      String?
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  claims    Claim[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model Template {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  content     String
+  category    String   // e.g., "LETTER", "REPORT", "ESTIMATE", "CONTRACT"
+  variables   String?  // JSON string of available variables
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  createdBy   String
+  user        User     @relation(fields: [createdBy], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([createdBy])
+}
+
+model Fee {
+  id          String   @id @default(uuid())
+  caseId      String
+  amount      Float
+  description String
+  type        String   // e.g., "CONSULTATION", "DOCUMENT_PREPARATION", "FILING", etc.
+  status      String   // e.g., "PENDING", "PAID", "OVERDUE"
+  dueDate     DateTime
+  paidDate    DateTime?
+  tenantId    String
+  createdBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  case        Case     @relation(fields: [caseId], references: [id])
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  creator     User     @relation("CreatedFees", fields: [createdBy], references: [id])
+  commissions Commission[]
+
+  @@index([caseId])
+  @@index([tenantId])
+  @@index([createdBy])
+}
+
+model Commission {
+  id          String   @id @default(uuid())
+  feeId       String
+  userId      String
+  amount      Float
+  percentage  Float
+  status      String   // e.g., "PENDING", "PAID"
+  paidDate    DateTime?
+  tenantId    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  fee         Fee      @relation(fields: [feeId], references: [id])
+  user        User     @relation(fields: [userId], references: [id])
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([feeId])
+  @@index([userId])
+  @@index([tenantId])
+}
+
+model Case {
+  id          String   @id @default(uuid())
+  name        String
+  status      String   @default("OPEN")
+  description String?
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  fees        Fee[]
+  documents   Document[]
+
+  @@index([tenantId])
+}
+
+model Document {
+  id          String   @id @default(uuid())
+  name        String
+  type        String   // e.g., "CLAIM_FORM", "POLICY", "INVOICE", "PHOTO", "VIDEO"
+  mimeType    String   // e.g., "application/pdf", "image/jpeg", "video/mp4"
+  size        Int      // File size in bytes
+  url         String   // URL to the stored file
+  ocrText     String?  // Extracted text from OCR
+  metadata    String?  // JSON string of additional metadata
+  version     Int      @default(1)
+  caseId      String?
+  tenantId    String
+  createdBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  case        Case?    @relation(fields: [caseId], references: [id])
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  creator     User     @relation("CreatedDocuments", fields: [createdBy], references: [id])
+  versions    DocumentVersion[]
+
+  @@index([caseId])
+  @@index([tenantId])
+  @@index([createdBy])
+}
+
+model DocumentVersion {
+  id          String   @id @default(uuid())
+  documentId  String
+  version     Int
+  url         String
+  ocrText     String?
+  metadata    String?
+  createdAt   DateTime @default(now())
+  createdBy   String
+
+  document    Document @relation(fields: [documentId], references: [id])
+  creator     User     @relation("CreatedDocumentVersions", fields: [createdBy], references: [id])
+
+  @@index([documentId])
+  @@index([createdBy])
+} 

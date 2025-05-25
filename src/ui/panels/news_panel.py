@@ -144,34 +144,63 @@ class NewsPanel(QWidget):
             <html>
             <head>
                 <style>
-                    body { font-family: Arial, sans-serif; margin: 10px; }
+                    body { 
+                        font-family: Arial, sans-serif; 
+                        margin: 10px; 
+                        background-color: #FAFAFA;
+                    }
                     .feed-item { 
                         border: 1px solid #ddd; 
-                        padding: 10px; 
-                        margin-bottom: 15px; 
+                        padding: 15px; 
+                        margin-bottom: 20px; 
                         border-radius: 5px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
                     }
                     .feed-title { 
                         font-size: 16px; 
                         font-weight: bold; 
-                        margin-bottom: 8px;
+                        margin-bottom: 10px;
+                        color: #19232D;
                     }
                     .feed-meta { 
                         font-size: 12px; 
-                        color: #666; 
-                        margin-bottom: 8px;
+                        color: #54687A; 
+                        margin-bottom: 10px;
+                        padding: 5px 0;
+                        border-bottom: 1px solid #eee;
                     }
                     .feed-content { 
                         font-size: 14px; 
-                        margin-bottom: 10px;
+                        margin-bottom: 12px;
+                        color: #293544;
+                        line-height: 1.4;
                     }
                     .feed-link { 
                         font-size: 12px;
                     }
-                    .warning { background-color: #FFEEEE; border-left: 4px solid #FF0000; }
-                    .advisory { background-color: #FFFFEE; border-left: 4px solid #FFCC00; }
-                    .watch { background-color: #EEEEFF; border-left: 4px solid #0000FF; }
-                    .hurricane { background-color: #FFEEEE; border-left: 4px solid #FF0000; }
+                    .feed-link a {
+                        color: #259AE9;
+                        text-decoration: none;
+                    }
+                    .feed-link a:hover {
+                        text-decoration: underline;
+                    }
+                    .warning { 
+                        background-color: #FFF0F0; 
+                        border-left: 4px solid #FF4444;
+                    }
+                    .advisory { 
+                        background-color: #FFF8E0; 
+                        border-left: 4px solid #FFA000;
+                    }
+                    .watch { 
+                        background-color: #E8F0FF; 
+                        border-left: 4px solid #2196F3;
+                    }
+                    .hurricane { 
+                        background-color: #FFE8E8; 
+                        border-left: 4px solid #D32F2F;
+                    }
                 </style>
             </head>
             <body>

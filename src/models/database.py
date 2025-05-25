@@ -6,7 +6,7 @@ import os
 import logging
 from typing import Optional
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text, Float
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text, Float, JSON, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -18,43 +18,66 @@ logger = logging.getLogger("monday_uploader.database")
 # Create the declarative base class
 Base = declarative_base()
 
+# Create a global session factory
+Session = sessionmaker()
+
+# Export the session factory
+__all__ = ['Base', 'Session', 'init_db', 'get_session']
+
 # Model definitions
 class Board(Base):
-    """Monday.com board representation."""
-    
+    """Model for boards."""
     __tablename__ = 'boards'
     
-    id = Column(String(50), primary_key=True)
-    name = Column(String(255), nullable=False)
-    description = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String, nullable=False)
+    archived = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    columns = relationship('BoardColumn', back_populates='board', cascade='all, delete-orphan')
-    items = relationship('Item', back_populates='board', cascade='all, delete-orphan')
+    columns = relationship("BoardColumn", back_populates="board", cascade="all, delete-orphan")
+    board_items = relationship("BoardItem", back_populates="board", cascade="all, delete-orphan")
+    items = relationship("Item", back_populates="board", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Board(id={self.id}, name='{self.name}')>"
 
 class BoardColumn(Base):
-    """Monday.com board column representation."""
-    
+    """Model for board columns."""
     __tablename__ = 'board_columns'
     
-    id = Column(String(50), primary_key=True)
-    board_id = Column(String(50), ForeignKey('boards.id'), nullable=False)
-    title = Column(String(255), nullable=False)
-    type = Column(String(50), nullable=False)
-    settings = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    board_id = Column(String, ForeignKey('boards.id'), nullable=False)
+    title = Column(String, nullable=False)
+    type = Column(String, nullable=False)  # Text, Number, Date, Checkbox, Dropdown, etc.
+    settings = Column(JSON, default=dict)  # Additional settings for the column type
+    archived = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    board = relationship('Board', back_populates='columns')
+    board = relationship("Board", back_populates="columns")
     
     def __repr__(self):
         return f"<BoardColumn(id={self.id}, title='{self.title}', type='{self.type}')>"
+
+class BoardItem(Base):
+    """Model for board items (rows)."""
+    __tablename__ = 'board_items'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    board_id = Column(String, ForeignKey('boards.id'), nullable=False)
+    data = Column(JSON, default=dict)  # Column values stored as key-value pairs
+    archived = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    board = relationship("Board", back_populates="board_items")
+    
+    def __repr__(self):
+        return f"<BoardItem(id={self.id}, board_id='{self.board_id}')>"
 
 class Item(Base):
     """Monday.com item representation."""
@@ -213,7 +236,7 @@ class WeatherFeed(Base):
 class Claim(Base):
     """Claims data from Excel import."""
     
-    __tablename__ = 'claims'
+    __tablename__ = 'PA_Claims'
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False)
@@ -234,7 +257,9 @@ class Claim(Base):
     claim_address = Column(String(255), nullable=True)
     insured_amount = Column(Float, nullable=True)
     initial_offer = Column(Float, nullable=True)
-    final_settlement = Column(Float, nullable=True)
+    final_settlement = Column(Float, nullable=True)  # Legacy field
+    settlement_amount = Column(Float, nullable=True)  # New field for settlement amount
+    settled_at = Column(DateTime, nullable=True)  # New field for settlement date
     pa_fee_percent = Column(Float, nullable=True)
     pa_fee_amount = Column(Float, nullable=True)
     insurance_company = Column(String(255), nullable=True)
@@ -259,8 +284,8 @@ class Claim(Base):
     # Store any additional columns as JSON
     additional_data = Column(Text, nullable=True)
     board_id = Column(String(50), nullable=True)
-    created_at = Column(String(50), default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    updated_at = Column(String(50), default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"), onupdate=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     
     def __repr__(self):
         return f"<Claim(id={self.id}, name='{self.name}', claim_number='{self.claim_number}')>"
@@ -449,6 +474,23 @@ class BoardView(Base):
     def __repr__(self):
         return f"<BoardView(id={self.id}, name='{self.name}', board_id='{self.board_id}')>"
 
+def update_schema(engine):
+    """
+    Update the database schema to match the current model definitions.
+    This is a simple migration that adds missing columns.
+    """
+    inspector = inspect(engine)
+    
+    # Add missing columns to boards table
+    if 'boards' in inspector.get_table_names():
+        columns = [col['name'] for col in inspector.get_columns('boards')]
+        
+        with engine.connect() as conn:
+            if 'archived' not in columns:
+                conn.execute(text("ALTER TABLE boards ADD COLUMN archived BOOLEAN DEFAULT FALSE"))
+                conn.commit()
+                logger.info("Added 'archived' column to boards table")
+
 def init_db(db_path: str) -> 'sqlalchemy.engine.Engine':
     """
     Initialize the database and return the SQLAlchemy engine.
@@ -468,25 +510,99 @@ def init_db(db_path: str) -> 'sqlalchemy.engine.Engine':
     engine = create_engine(f"sqlite:///{db_path}")
     
     # Create tables if they don't exist
-    Base.metadata.create_all(engine)
-    
-    # Import and initialize settlement models (with error handling)
     try:
-        from src.models.settlement_models import DamageCategory, DamageItem, DamageEntry, SettlementCalculation
-        # Create tables for settlement models
-        DamageCategory.metadata.create_all(engine)
-        DamageItem.metadata.create_all(engine)
-        DamageEntry.metadata.create_all(engine)
-        SettlementCalculation.metadata.create_all(engine)
-        logger.info("Settlement models initialized successfully")
-    except ImportError as e:
-        logger.warning(f"Settlement models could not be imported: {str(e)}")
+        # Create all tables
+        Base.metadata.create_all(engine)
+        
+        # Log created tables
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        logger.info(f"Created/verified tables: {', '.join(tables)}")
+        
+        # Verify each required table exists
+        required_tables = [
+            'boards', 'board_data', 'PA_Claims', 'clients', 
+            'public_adjusters', 'employees', 'notes', 
+            'weather_feeds', 'calendar_events',
+            'board_columns', 'board_items', 'items',
+            'item_column_values', 'sync_logs', 'templates',
+            'event_reminders', 'map_locations', 'insurance_companies',
+            'policies', 'board_views'
+        ]
+        
+        missing_tables = [table for table in required_tables if table not in tables]
+        if missing_tables:
+            logger.error(f"Missing required tables: {', '.join(missing_tables)}")
+            # Try to create missing tables
+            for table in missing_tables:
+                try:
+                    if table == 'boards':
+                        Board.__table__.create(engine)
+                    elif table == 'board_data':
+                        BoardData.__table__.create(engine)
+                    elif table == 'PA_Claims':
+                        Claim.__table__.create(engine)
+                    elif table == 'clients':
+                        Client.__table__.create(engine)
+                    elif table == 'public_adjusters':
+                        PublicAdjuster.__table__.create(engine)
+                    elif table == 'employees':
+                        Employee.__table__.create(engine)
+                    elif table == 'notes':
+                        Note.__table__.create(engine)
+                    elif table == 'weather_feeds':
+                        WeatherFeed.__table__.create(engine)
+                    elif table == 'calendar_events':
+                        CalendarEvent.__table__.create(engine)
+                    elif table == 'board_columns':
+                        BoardColumn.__table__.create(engine)
+                    elif table == 'board_items':
+                        BoardItem.__table__.create(engine)
+                    elif table == 'items':
+                        Item.__table__.create(engine)
+                    elif table == 'item_column_values':
+                        ItemColumnValue.__table__.create(engine)
+                    elif table == 'sync_logs':
+                        SyncLog.__table__.create(engine)
+                    elif table == 'templates':
+                        Template.__table__.create(engine)
+                    elif table == 'event_reminders':
+                        EventReminder.__table__.create(engine)
+                    elif table == 'map_locations':
+                        MapLocation.__table__.create(engine)
+                    elif table == 'insurance_companies':
+                        InsuranceCompany.__table__.create(engine)
+                    elif table == 'policies':
+                        Policy.__table__.create(engine)
+                    elif table == 'board_views':
+                        BoardView.__table__.create(engine)
+                    logger.info(f"Created missing table: {table}")
+                except Exception as e:
+                    logger.error(f"Failed to create table {table}: {str(e)}")
+        
+        # Update schema for existing tables
+        update_schema(engine)
+        
+        # Import and initialize settlement models
+        try:
+            from src.models.settlement_models import DamageCategory, DamageItem, DamageEntry, SettlementCalculation
+            # Create tables for settlement models
+            DamageCategory.metadata.create_all(engine)
+            DamageItem.metadata.create_all(engine)
+            DamageEntry.metadata.create_all(engine)
+            SettlementCalculation.metadata.create_all(engine)
+            logger.info("Settlement models initialized successfully")
+        except ImportError as e:
+            logger.warning(f"Settlement models could not be imported: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error initializing settlement models: {str(e)}")
+        
+        logger.info(f"Database initialized at: {db_path}")
+        return engine
+        
     except Exception as e:
-        logger.error(f"Error initializing settlement models: {str(e)}")
-    
-    logger.info(f"Database initialized at: {db_path}")
-    
-    return engine
+        logger.error(f"Error initializing database: {str(e)}")
+        raise
 
 def get_session(engine):
     """

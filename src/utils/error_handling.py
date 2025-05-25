@@ -327,79 +327,52 @@ def handle_error(
     callback: Optional[Callable[[str], None]] = None
 ) -> None:
     """
-    Handle exceptions by showing appropriate error dialogs
+    Handle an error by displaying an error dialog and logging the error.
     
     Args:
-        exception: The exception to handle
+        exception: The exception that occurred
         parent: Parent widget for the error dialog
-        context: Additional context information for logging
-        title: Custom title for the error dialog
-        message: Custom message for the error dialog
-        callback: Callback function to handle recovery options
+        context: Additional context information
+        title: Custom error dialog title
+        message: Custom error message
+        callback: Optional callback function to handle user response
     """
-    # Convert regular exceptions to MondayError
-    if not isinstance(exception, MondayError):
-        if isinstance(exception, requests.HTTPError):
-            status_code = exception.response.status_code if hasattr(exception, 'response') else None
-            if status_code == 429:
-                monday_error = APIError(
-                    "API rate limit exceeded. Try again later.",
-                    error_code=ErrorCodes.API_RATE_LIMIT_EXCEEDED,
-                    original_exception=exception,
-                    http_status=status_code,
-                    response_body=exception.response.text if hasattr(exception, 'response') else None
-                )
-            else:
-                monday_error = APIError(
-                    f"API error: {str(exception)}",
-                    original_exception=exception,
-                    http_status=status_code,
-                    response_body=exception.response.text if hasattr(exception, 'response') else None
-                )
-        elif isinstance(exception, requests.RequestException):
-            monday_error = NetworkError(
-                f"Network error: {str(exception)}",
-                original_exception=exception
-            )
-        elif isinstance(exception, (FileNotFoundError, PermissionError)):
-            monday_error = FileError(
-                f"File error: {str(exception)}",
-                error_code=ErrorCodes.FILE_NOT_FOUND if isinstance(exception, FileNotFoundError) else ErrorCodes.FILE_PERMISSION_DENIED,
-                original_exception=exception
-            )
-        else:
-            monday_error = MondayError(
-                f"Unexpected error: {str(exception)}",
-                error_code=ErrorCodes.APP_UNEXPECTED_ERROR,
-                original_exception=exception
-            )
-    else:
-        monday_error = exception
-    
     # Log the error
-    monday_error.log_error(context)
+    if isinstance(exception, MondayError):
+        exception.log_error(context)
+    else:
+        logger.error(f"Error occurred: {str(exception)}")
+        logger.error(f"Original exception: {traceback.format_exc()}")
     
-    # Show error dialog if parent is provided
-    if parent:
-        dialog_title = title or "Error"
-        dialog_message = message or str(monday_error)
-        
+    # Check if QApplication exists
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        logger.error("Cannot show error dialog: QApplication not initialized")
+        return
+    
+    # Create error dialog
+    if isinstance(exception, MondayError):
         dialog = ErrorDialog(
-            parent,
-            title=dialog_title,
-            message=dialog_message,
-            error_code=monday_error.error_code,
-            recovery_options=monday_error.recovery_options,
+            parent=parent if isinstance(parent, QWidget) else None,
+            title=title or "Error",
+            message=message or str(exception),
+            error_code=exception.error_code,
+            recovery_options=exception.recovery_options,
             callback=callback
         )
-        dialog.exec()
     else:
-        # If no parent is provided, just show a simple message box
-        QMessageBox.critical(
-            None,
-            title or "Error",
-            message or str(monday_error)
-        )
+        # Use QMessageBox for non-MondayError exceptions
+        dialog = QMessageBox()
+        dialog.setIcon(QMessageBox.Critical)
+        dialog.setWindowTitle(title or "Error")
+        dialog.setText(message or str(exception))
+        dialog.setStandardButtons(QMessageBox.Ok)
+        if isinstance(parent, QWidget):
+            dialog.setParent(parent)
+    
+    # Show dialog
+    dialog.exec()
 
 def retry(
     max_retries: int = 3, 

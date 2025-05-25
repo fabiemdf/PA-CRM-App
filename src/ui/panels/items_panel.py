@@ -233,6 +233,9 @@ class ItemsPanel(QWidget):
         # Setup UI
         self._setup_ui()
         
+        # Load boards
+        self.refresh_boards()
+        
         logger.info("Items panel initialized")
     
     def _setup_ui(self):
@@ -276,8 +279,13 @@ class ItemsPanel(QWidget):
         # Create header
         header_layout = QHBoxLayout()
         
-        self.board_label = QLabel("No board selected")
-        header_layout.addWidget(self.board_label)
+        # Add board selector
+        board_layout = QHBoxLayout()
+        self.board_combo = QComboBox()
+        self.board_combo.currentIndexChanged.connect(self._on_board_changed)
+        board_layout.addWidget(QLabel("Board:"))
+        board_layout.addWidget(self.board_combo)
+        header_layout.addLayout(board_layout)
         
         # View management
         view_layout = QHBoxLayout()
@@ -377,8 +385,10 @@ class ItemsPanel(QWidget):
             self.current_board_id = board_id
             self.current_board_name = board_name
             
-            # Update header
-            self.board_label.setText(f"Board: {board_name}")
+            # Update board combo box
+            index = self.board_combo.findData(board_id)
+            if index >= 0:
+                self.board_combo.setCurrentIndex(index)
             
             # Show/hide settlement calculator button based on board type
             self.settlement_action.setVisible(self.current_board_name == "Claims")
@@ -823,4 +833,38 @@ class ItemsPanel(QWidget):
                 
         except Exception as e:
             logger.error(f"Error saving view: {str(e)}")
-            QMessageBox.critical(self, "Error", f"Failed to save view: {str(e)}") 
+            QMessageBox.critical(self, "Error", f"Failed to save view: {str(e)}")
+    
+    def _on_board_changed(self, index):
+        """Handle board selection change."""
+        if index < 0:
+            return
+            
+        board_id = self.board_combo.currentData()
+        if board_id:
+            self.load_board_items(board_id)
+            
+    def refresh_boards(self):
+        """Refresh the boards list."""
+        try:
+            # Get boards from controller
+            boards = self.board_controller.get_boards()
+            
+            # Update combo box
+            self.board_combo.clear()
+            for board in boards:
+                self.board_combo.addItem(board['name'], board['id'])
+                
+            # Select current board if any
+            if self.current_board_id:
+                index = self.board_combo.findData(self.current_board_id)
+                if index >= 0:
+                    self.board_combo.setCurrentIndex(index)
+                    
+        except Exception as e:
+            logger.error(f"Error refreshing boards: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to refresh boards: {str(e)}"
+            ) 

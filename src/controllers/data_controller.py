@@ -1,13 +1,10 @@
-print("Loaded DataController from:", __file__)
-
 """
-Data controller for managing Monday.com items.
+Data controller for managing local data.
 """
 
 import logging
 import random
 import json
-import requests
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -18,15 +15,37 @@ from src.models.database import (
     BoardData, WeatherFeed, Board, BoardView, init_db
 )
 import pandas as pd
-import xml.etree.ElementTree as ET
-from urllib.parse import urlparse
+import requests
+import feedparser
+import time
+from src.config.board_config import BOARD_MODEL_MAP, DEFAULT_BOARDS
 
 # Get logger
 logger = logging.getLogger("monday_uploader.data_controller")
 
+# Map model names to actual model classes
+MODEL_CLASS_MAP = {
+    "Claim": Claim,
+    "Client": Client,
+    "PublicAdjuster": PublicAdjuster,
+    "Employee": Employee,
+    "Note": Note,
+    "Document": BoardData,  # Using BoardData as base for documents
+    "DamageEstimate": BoardData,  # Using BoardData as base for damage estimates
+    "Communication": BoardData,  # Using BoardData as base for communications
+    "Lead": BoardData,  # Using BoardData as base for leads
+    "Task": BoardData,  # Using BoardData as base for tasks
+    "InsuranceCompany": BoardData,  # Using BoardData as base for insurance companies
+    "Contact": BoardData,  # Using BoardData as base for contacts
+    "MarketingActivity": BoardData,  # Using BoardData as base for marketing activities
+    "InsuranceRepresentative": BoardData,  # Using BoardData as base for insurance representatives
+    "PoliceReport": BoardData,  # Using BoardData as base for police reports
+    "WeatherReport": WeatherFeed  # Using WeatherFeed for weather reports
+}
+
 class DataController:
     """
-    Controller for managing Monday.com board items.
+    Controller for managing local data.
     """
     
     def __init__(self, engine=None, db_path=None, parent=None, *args, **kwargs):
@@ -63,25 +82,8 @@ class DataController:
         self._mock_items = {}  # Cache for mock items
         self.parent = parent
         
-        # Define board mapping
-        self.board_map = {
-            "Claims": "8903072880",
-            "Clients": "8768750185",
-            "Public Adjusters": "9000027904",
-            "Employees": "9000122678",
-            "Notes": "8968042746",
-            "Documents": "8769212922",
-            "Damage Estimates": "8769684040",
-            "Communications": "8769967973",
-            "Leads": "8778422410",
-            "Tasks": "8792210214",
-            "Insurance Companies": "8792259332",
-            "Contacts": "8792441338",
-            "Marketing Activities": "8792459115",
-            "Insurance Representatives": "8876787198",
-            "Police Report": "8884671005",
-            "Weather Reports": "9123456789"
-        }
+        # Use the board mapping from config
+        self.board_map = DEFAULT_BOARDS
         
         logger.info("Data controller initialized with engine")
     
@@ -100,77 +102,71 @@ class DataController:
                 return name
         return None
     
-    def load_board_items(self, board_id: str) -> List[Dict[str, Any]]:
+    def load_board_items(self, board_id: str) -> list:
         """
-        Load items for a board.
-        
+        Load items for a board from the correct table/model.
         Args:
             board_id: Board ID
-            
         Returns:
-            List of items
+            List of items (dicts)
         """
         try:
-            # Check the board type
             board_name = self.get_board_name(board_id)
             logger.info(f"Loading items for board: {board_name} (ID: {board_id})")
             
-            # First try to load from generic board data
-            try:
-                logger.info(f"Attempting to load from generic board_data table")
-                board_data = self.load_board_data_from_database(board_id)
-                if board_data and len(board_data) > 0:
-                    logger.info(f"Successfully loaded {len(board_data)} items from board_data table")
-                    return board_data
-                else:
-                    logger.info(f"No data found in board_data table, trying specialized models")
-            except Exception as e:
-                logger.warning(f"Error loading from board_data table: {str(e)}")
-                # Continue to try specialized models
-                    
-            # For backward compatibility, check specialized models
-            # Handle Claims board
-            if board_name == "Claims":
-                try:
-                    # Check if we have data in the database
-                    claims = self.load_claims_from_database(board_id)
-                    if claims and len(claims) > 0:
-                        logger.info(f"Found {len(claims)} claims in specialized model table")
-                        return claims
-                except Exception as e:
-                    logger.error(f"Error loading claims from specialized model: {str(e)}")
-            
-            # Handle Clients board
-            elif board_name == "Clients":
-                try:
-                    # Check if we have data in the database
-                    clients = self.load_clients_from_database(board_id)
-                    if clients and len(clients) > 0:
-                        # If clients exist in database, load them
-                        logger.info(f"Found {len(clients)} clients in specialized model table")
-                        return clients
-                except Exception as e:
-                    logger.error(f"Error loading clients from specialized model: {str(e)}")
-            
-            # Handle Public Adjusters board
-            elif board_name == "Public Adjusters":
-                try:
-                    # Check if we have data in the database
-                    adjusters = self.load_public_adjusters_from_database(board_id)
-                    if adjusters and len(adjusters) > 0:
-                        # If public adjusters exist in database, load them
-                        logger.info(f"Found {len(adjusters)} adjusters in specialized model table")
-                        return adjusters
-                except Exception as e:
-                    logger.error(f"Error loading public adjusters from specialized model: {str(e)}")
-            
-            # If no data was found in the database, generate mock data
-            logger.info(f"No data found in database for board {board_name}, generating mock data")
-            if board_id not in self._mock_items:
-                self._mock_items[board_id] = self._generate_mock_items(board_id)
+            # Get model name from mapping
+            model_name = BOARD_MODEL_MAP.get(board_name)
+            if not model_name:
+                logger.warning(f"No model found for board: {board_name}")
+                return []
                 
-            logger.info(f"Loaded {len(self._mock_items[board_id])} mock items for board {board_id}")
-            return self._mock_items[board_id]
+            # Get actual model class
+            model_class = MODEL_CLASS_MAP.get(model_name)
+            if not model_class:
+                logger.warning(f"No model class found for model name: {model_name}")
+                return []
+            
+            with Session(self.engine) as session:
+                items = []
+                
+                # First try loading from the specific model table
+                if model_class != BoardData:
+                    try:
+                        records = session.query(model_class).filter_by(board_id=board_id).all()
+                        for i, record in enumerate(records):
+                            item = {c.name: getattr(record, c.name) for c in record.__table__.columns}
+                            item['id'] = f"{board_id}_{i}"
+                            items.append(item)
+                        logger.info(f"Loaded {len(items)} items from {model_class.__tablename__}")
+                    except Exception as e:
+                        logger.warning(f"Error loading from specific model: {str(e)}")
+                
+                # If no items found, try loading from BoardData
+                if not items:
+                    try:
+                        board_data_records = session.query(BoardData).filter_by(board_id=board_id).all()
+                        for i, record in enumerate(board_data_records):
+                            item = {
+                                'id': f"{board_id}_{i}",
+                                'name': record.name,
+                                'created_at': record.created_at,
+                                'updated_at': record.updated_at
+                            }
+                            # Add data from JSON
+                            if record.data:
+                                try:
+                                    data = json.loads(record.data)
+                                    item.update(data)
+                                except Exception as e:
+                                    logger.warning(f"Error parsing JSON data: {str(e)}")
+                            items.append(item)
+                        logger.info(f"Loaded {len(items)} items from BoardData")
+                    except Exception as e:
+                        logger.warning(f"Error loading from BoardData: {str(e)}")
+                
+                logger.info(f"Total items loaded for board {board_name}: {len(items)}")
+                return items
+                
         except Exception as e:
             logger.error(f"Error loading board items: {str(e)}")
             logger.exception("Detailed traceback:")
@@ -184,10 +180,6 @@ class DataController:
             List of weather feed items
         """
         try:
-            # Clear existing weather feeds
-            with Session(self.engine) as session:
-                session.query(WeatherFeed).delete()
-            
             # List to store all fetched feeds
             all_feeds = []
             
@@ -203,58 +195,84 @@ class DataController:
             weather_gov_feeds = self.fetch_weather_gov_alerts()
             all_feeds.extend(weather_gov_feeds)
             
-            # Commit to database
-            session.commit()
+            # Store feeds in database
+            with Session(self.engine) as session:
+                # Clear existing feeds
+                session.query(WeatherFeed).delete()
+                
+                # Add new feeds
+                for feed in all_feeds:
+                    session.add(feed)
+                
+                # Commit changes
+                session.commit()
+                logger.info(f"Stored {len(all_feeds)} weather feeds in database")
             
             # Return as items for display
             return self.load_weather_feeds_from_database()
         except Exception as e:
             logger.error(f"Error fetching weather feeds: {str(e)}")
-            with Session(self.engine) as session:
-                session.rollback()
             return []
     
     def fetch_noaa_feeds(self) -> List[WeatherFeed]:
         """
-        Fetch and parse NOAA RSS feeds.
+        Fetch weather feeds from NOAA RSS feeds.
         
         Returns:
-            List of WeatherFeed instances
+            List of WeatherFeed objects
         """
+        feeds = []
         try:
             # NOAA RSS feed URLs
-            feed_urls = [
-                "https://www.weather.gov/xml/current_obs/all_xml.zip",
-                "https://www.nhc.noaa.gov/index-at.xml",
-                "https://www.weather.gov/alerts/rss.php",
+            noaa_feeds = [
+                "https://www.nhc.noaa.gov/nhc_at1.xml",  # Atlantic
+                "https://www.nhc.noaa.gov/nhc_ep1.xml",  # Eastern Pacific
+                "https://www.nhc.noaa.gov/nhc_cp1.xml",  # Central Pacific
+                "https://alerts.weather.gov/cap/us.php?x=0"  # Weather.gov alerts
             ]
             
-            feeds = []
+            for feed_url in noaa_feeds:
+                try:
+                    # Fetch the feed
+                    response = requests.get(feed_url, timeout=10)
+                    response.raise_for_status()
+                    
+                    # Parse the feed
+                    feed = feedparser.parse(response.content)
+                    
+                    # Process each entry
+                    for entry in feed.entries:
+                        # Extract severity from title or content
+                        severity = "normal"
+                        if any(word in entry.title.lower() for word in ["warning", "severe", "extreme"]):
+                            severity = "warning"
+                        elif any(word in entry.title.lower() for word in ["advisory", "caution"]):
+                            severity = "advisory"
+                        elif any(word in entry.title.lower() for word in ["watch", "monitoring"]):
+                            severity = "watch"
+                        elif any(word in entry.title.lower() for word in ["hurricane", "tropical storm"]):
+                            severity = "hurricane"
+                        
+                        # Create WeatherFeed object
+                        feed = WeatherFeed(
+                            source="NOAA",
+                            feed_type="weather",
+                            title=entry.title,
+                            content=entry.description if hasattr(entry, 'description') else entry.title,
+                            url=entry.link,
+                            pub_date=datetime.fromtimestamp(time.mktime(entry.published_parsed)) if hasattr(entry, 'published_parsed') else datetime.now(),
+                            location=entry.get('location', ''),
+                            severity=severity
+                        )
+                        feeds.append(feed)
+                        
+                except Exception as e:
+                    logger.error(f"Error fetching NOAA feed {feed_url}: {str(e)}")
+                    continue
             
-            # For demonstration purposes (in a real app, we'd actually fetch these feeds)
-            feed_data = [
-                {"title": "Tropical Storm Warning for Southeast Coast", "content": "A tropical storm warning has been issued for coastal areas...", "url": "https://www.nhc.noaa.gov/text/example1.shtml", "pub_date": datetime.now()},
-                {"title": "Hurricane Watch - Atlantic Basin", "content": "A hurricane watch is in effect for the following areas...", "url": "https://www.nhc.noaa.gov/text/example2.shtml", "pub_date": datetime.now() - timedelta(hours=2)},
-                {"title": "Severe Weather Alert - Thunderstorms", "content": "Severe thunderstorms are expected in the following counties...", "url": "https://www.weather.gov/alerts/example1.php", "pub_date": datetime.now() - timedelta(hours=5)},
-                {"title": "Flash Flood Warning", "content": "Flash flooding is occurring or imminent in the following areas...", "url": "https://www.weather.gov/alerts/example2.php", "pub_date": datetime.now() - timedelta(hours=1)},
-            ]
-            
-            with Session(self.engine) as session:
-                for item in feed_data:
-                    feed = WeatherFeed(
-                        source="NOAA",
-                        feed_type="Weather Alert",
-                        title=item["title"],
-                        content=item["content"],
-                        url=item["url"],
-                        pub_date=item["pub_date"],
-                        severity="Warning",
-                        location="Southeast United States"
-                    )
-                    session.add(feed)
-                    feeds.append(feed)
-            
+            logger.info(f"Successfully fetched {len(feeds)} NOAA feeds")
             return feeds
+            
         except Exception as e:
             logger.error(f"Error fetching NOAA feeds: {str(e)}")
             return []
@@ -277,25 +295,50 @@ class DataController:
             
             # For demonstration purposes (in a real app, we'd actually fetch these feeds)
             feed_data = [
-                {"title": "Hurricane Maria Advisory #28", "content": "Hurricane Maria continues to move northward away from the coast...", "url": "https://www.nhc.noaa.gov/text/example3.shtml", "pub_date": datetime.now() - timedelta(days=1)},
-                {"title": "Tropical Storm Lee Discussion #15", "content": "Tropical Storm Lee is expected to strengthen in the next 48 hours...", "url": "https://www.nhc.noaa.gov/text/example4.shtml", "pub_date": datetime.now() - timedelta(hours=12)},
-                {"title": "5-Day Tropical Weather Outlook", "content": "A tropical wave is expected to move off the west coast of Africa...", "url": "https://www.nhc.noaa.gov/text/example5.shtml", "pub_date": datetime.now() - timedelta(hours=6)},
+                {
+                    "title": "Hurricane Maria Advisory #28",
+                    "content": "Hurricane Maria continues to move northward away from the coast. Maximum sustained winds are 85 mph.",
+                    "url": "https://www.nhc.noaa.gov/text/example3.shtml",
+                    "pub_date": datetime.now() - timedelta(days=1),
+                    "source": "National Hurricane Center",
+                    "feed_type": "Hurricane",
+                    "severity": "Warning",
+                    "location": "Atlantic Ocean"
+                },
+                {
+                    "title": "Tropical Storm Lee Discussion #15",
+                    "content": "Tropical Storm Lee is expected to strengthen in the next 48 hours. Current winds are 60 mph.",
+                    "url": "https://www.nhc.noaa.gov/text/example4.shtml",
+                    "pub_date": datetime.now() - timedelta(hours=12),
+                    "source": "National Hurricane Center",
+                    "feed_type": "Hurricane",
+                    "severity": "Advisory",
+                    "location": "Caribbean Sea"
+                },
+                {
+                    "title": "5-Day Tropical Weather Outlook",
+                    "content": "A tropical wave is expected to move off the west coast of Africa. Development chances are 40%.",
+                    "url": "https://www.nhc.noaa.gov/text/example5.shtml",
+                    "pub_date": datetime.now() - timedelta(hours=6),
+                    "source": "National Hurricane Center",
+                    "feed_type": "Hurricane",
+                    "severity": "Outlook",
+                    "location": "Eastern Atlantic"
+                }
             ]
             
-            with Session(self.engine) as session:
-                for item in feed_data:
-                    feed = WeatherFeed(
-                        source="National Hurricane Center",
-                        feed_type="Hurricane",
-                        title=item["title"],
-                        content=item["content"],
-                        url=item["url"],
-                        pub_date=item["pub_date"],
-                        severity="Advisory",
-                        location="Atlantic Basin"
-                    )
-                    session.add(feed)
-                    feeds.append(feed)
+            for item in feed_data:
+                feed = WeatherFeed(
+                    source=item["source"],
+                    feed_type=item["feed_type"],
+                    title=item["title"],
+                    content=item["content"],
+                    url=item["url"],
+                    pub_date=item["pub_date"],
+                    severity=item["severity"],
+                    location=item["location"]
+                )
+                feeds.append(feed)
             
             return feeds
         except Exception as e:
@@ -317,25 +360,50 @@ class DataController:
             
             # For demonstration purposes (in a real app, we'd actually fetch these feeds)
             feed_data = [
-                {"title": "Tornado Warning", "content": "The National Weather Service has issued a tornado warning for...", "url": "https://www.weather.gov/alerts/example6.php", "pub_date": datetime.now(), "severity": "Warning", "location": "Central Oklahoma"},
-                {"title": "Winter Storm Watch", "content": "A winter storm watch is in effect for the following areas...", "url": "https://www.weather.gov/alerts/example7.php", "pub_date": datetime.now() - timedelta(hours=3), "severity": "Watch", "location": "Northern New England"},
-                {"title": "Coastal Flood Advisory", "content": "A coastal flood advisory remains in effect until...", "url": "https://www.weather.gov/alerts/example8.php", "pub_date": datetime.now() - timedelta(hours=8), "severity": "Advisory", "location": "Gulf Coast"},
+                {
+                    "title": "Tornado Warning",
+                    "content": "The National Weather Service has issued a tornado warning for Central Oklahoma. Take shelter immediately.",
+                    "url": "https://www.weather.gov/alerts/example6.php",
+                    "pub_date": datetime.now(),
+                    "source": "Weather.gov",
+                    "feed_type": "Weather Alert",
+                    "severity": "Warning",
+                    "location": "Central Oklahoma"
+                },
+                {
+                    "title": "Winter Storm Watch",
+                    "content": "A winter storm watch is in effect for Northern New England. Expect 6-12 inches of snow.",
+                    "url": "https://www.weather.gov/alerts/example7.php",
+                    "pub_date": datetime.now() - timedelta(hours=3),
+                    "source": "Weather.gov",
+                    "feed_type": "Weather Alert",
+                    "severity": "Watch",
+                    "location": "Northern New England"
+                },
+                {
+                    "title": "Coastal Flood Advisory",
+                    "content": "A coastal flood advisory remains in effect until 8 PM EDT. Minor flooding expected in low-lying areas.",
+                    "url": "https://www.weather.gov/alerts/example8.php",
+                    "pub_date": datetime.now() - timedelta(hours=8),
+                    "source": "Weather.gov",
+                    "feed_type": "Weather Alert",
+                    "severity": "Advisory",
+                    "location": "Gulf Coast"
+                }
             ]
             
-            with Session(self.engine) as session:
-                for item in feed_data:
-                    feed = WeatherFeed(
-                        source="Weather.gov",
-                        feed_type="Weather Alert",
-                        title=item["title"],
-                        content=item["content"],
-                        url=item["url"],
-                        pub_date=item["pub_date"],
-                        severity=item["severity"],
-                        location=item["location"]
-                    )
-                    session.add(feed)
-                    feeds.append(feed)
+            for item in feed_data:
+                feed = WeatherFeed(
+                    source=item["source"],
+                    feed_type=item["feed_type"],
+                    title=item["title"],
+                    content=item["content"],
+                    url=item["url"],
+                    pub_date=item["pub_date"],
+                    severity=item["severity"],
+                    location=item["location"]
+                )
+                feeds.append(feed)
             
             return feeds
         except Exception as e:
@@ -778,13 +846,9 @@ class DataController:
             
             logger.info(f"Importing data for board {board_name} (ID: {board_id})")
             
-            # The headers are already in the first row of data_items since we used header=4 when reading the Excel file
-            # We don't need to treat data_items[0] as headers again
+            # Get headers from first row
             headers = []
             if data_items and len(data_items) > 0:
-                # These are the column headers that were already extracted from the Excel file
-                # We'll read them directly from the dataframe columns instead of using data_items[0]
-                # This will be passed in from main.py
                 headers = [str(h) if h is not None and not pd.isna(h) else f"Column_{i}" 
                           for i, h in enumerate(data_items[0])]
                 logger.info(f"Found headers: {headers}")
@@ -792,7 +856,20 @@ class DataController:
             # Clear existing data for this board from the database
             with Session(self.engine) as session:
                 try:
-                    count = session.query(BoardData).filter_by(board_id=board_id).delete()
+                    # Delete existing records
+                    if board_name == "Claims":
+                        count = session.query(Claim).filter_by(board_id=board_id).delete()
+                    elif board_name == "Clients":
+                        count = session.query(Client).filter_by(board_id=board_id).delete()
+                    elif board_name == "Public Adjusters":
+                        count = session.query(PublicAdjuster).filter_by(board_id=board_id).delete()
+                    elif board_name == "Employees":
+                        count = session.query(Employee).filter_by(board_id=board_id).delete()
+                    elif board_name == "Notes":
+                        count = session.query(Note).filter_by(board_id=board_id).delete()
+                    else:
+                        count = session.query(BoardData).filter_by(board_id=board_id).delete()
+                    
                     session.commit()
                     logger.info(f"Cleared {count} existing records for board {board_name}")
                 except Exception as e:
@@ -802,10 +879,7 @@ class DataController:
             
             # Convert Excel data to items and store in database
             items = []
-            for i, row in enumerate(data_items):
-                # Don't skip the first row since all rows are now data rows
-                # The headers were already handled when reading the Excel file
-                
+            for i, row in enumerate(data_items[1:], 1):  # Skip header row
                 # Skip empty rows
                 if not row or all(pd.isna(cell) or cell is None or str(cell).strip() == "" for cell in row):
                     continue
@@ -832,19 +906,104 @@ class DataController:
                     
                     logger.info(f"Processing row {i}: {name}")
                     
-                    # Create database record
-                    board_data = BoardData(
-                        board_id=board_id,
-                        board_name=board_name,
-                        name=name,
-                        data=json.dumps(row_data)
-                    )
-                    
+                    # Create appropriate database record based on board type
                     with Session(self.engine) as session:
                         try:
-                            session.add(board_data)
+                            if board_name == "Claims":
+                                claim = Claim(
+                                    board_id=board_id,
+                                    name=name,
+                                    claim_number=row_data.get("Claim Number", ""),
+                                    person=row_data.get("Person", ""),
+                                    claim_status=row_data.get("Claim Status", ""),
+                                    client=row_data.get("Client", ""),
+                                    email=row_data.get("Email", ""),
+                                    file_number=row_data.get("File Number", ""),
+                                    policy_number=row_data.get("Policy Number", ""),
+                                    dup_claim_number=row_data.get("Dup Claim Number", ""),
+                                    loss_type=row_data.get("Loss Type", ""),
+                                    claim_location=row_data.get("Claim Location", ""),
+                                    claim_address=row_data.get("Claim Address", ""),
+                                    insured_amount=row_data.get("Insured Amount", "0"),
+                                    initial_offer=row_data.get("Initial Offer", "0"),
+                                    final_settlement=row_data.get("Final Settlement", "0"),
+                                    pa_fee_percent=row_data.get("PA Fee Percent", "0"),
+                                    pa_fee_amount=row_data.get("PA Fee Amount", "0"),
+                                    insurance_company=row_data.get("Insurance Company", ""),
+                                    insurance_adjuster=row_data.get("Insurance Adjuster", ""),
+                                    notes=row_data.get("Notes", ""),
+                                    additional_data=json.dumps(row_data)
+                                )
+                                session.add(claim)
+                            
+                            elif board_name == "Clients":
+                                client = Client(
+                                    board_id=board_id,
+                                    name=name,
+                                    company=row_data.get("Company", ""),
+                                    email=row_data.get("Email", ""),
+                                    phone=row_data.get("Phone", ""),
+                                    status=row_data.get("Status", "Active"),
+                                    contact_person=row_data.get("Contact Person", ""),
+                                    additional_data=json.dumps(row_data)
+                                )
+                                session.add(client)
+                            
+                            elif board_name == "Public Adjusters":
+                                adjuster = PublicAdjuster(
+                                    board_id=board_id,
+                                    name=name,
+                                    company=row_data.get("Company", ""),
+                                    email=row_data.get("Email", ""),
+                                    phone=row_data.get("Phone", ""),
+                                    status=row_data.get("Status", "Active"),
+                                    license=row_data.get("License", ""),
+                                    state=row_data.get("State", ""),
+                                    additional_data=json.dumps(row_data)
+                                )
+                                session.add(adjuster)
+                            
+                            elif board_name == "Employees":
+                                employee = Employee(
+                                    board_id=board_id,
+                                    name=name,
+                                    position=row_data.get("Position", ""),
+                                    email=row_data.get("Email", ""),
+                                    phone=row_data.get("Phone", ""),
+                                    status=row_data.get("Status", "Active"),
+                                    department=row_data.get("Department", ""),
+                                    hire_date=row_data.get("Hire Date", ""),
+                                    additional_data=json.dumps(row_data)
+                                )
+                                session.add(employee)
+                            
+                            elif board_name == "Notes":
+                                note = Note(
+                                    board_id=board_id,
+                                    title=name,
+                                    content=row_data.get("Content", ""),
+                                    client=row_data.get("Client", ""),
+                                    status=row_data.get("Status", "Active"),
+                                    category=row_data.get("Category", ""),
+                                    created_by=row_data.get("Created By", ""),
+                                    due_date=row_data.get("Due Date", ""),
+                                    additional_data=json.dumps(row_data)
+                                )
+                                session.add(note)
+                            
+                            else:
+                                # Generic board data
+                                board_data = BoardData(
+                                    board_id=board_id,
+                                    board_name=board_name,
+                                    name=name,
+                                    data=json.dumps(row_data)
+                                )
+                                session.add(board_data)
+                            
                             session.commit()
                             logger.info(f"Saved record to database: {name}")
+                            
                         except Exception as e:
                             logger.error(f"Error saving record to database: {str(e)}")
                             session.rollback()
